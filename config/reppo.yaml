@@ -58,7 +58,7 @@ hyperparameters:
   reduce_kl: true
   reverse_kl: false # previous default "false"
   update_kl_lagrangian: true
-  actor_kl_clip_mode: "clipped" # "full", "clipped", "kl_relu_clipped", "kl_bound_clipped", "value"
+  actor_kl_clip_mode: "full" # "full", "clipped", "kl_relu_clipped", "kl_bound_clipped", "value"
   ## entropy settings
   ent_start: 0.01
   ent_target_mult: 0.5

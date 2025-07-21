@@ -30,6 +30,13 @@ from tensordict import TensorDict
 from torch.amp import GradScaler
 from reppo_alg.torchrl.envs import make_envs
 from reppo_alg.network_utils.torch_models import Actor, Critic
+<<<<<<< HEAD
+=======
+from reppo_alg.torchrl.reppo_util import (
+    EmpiricalNormalization,
+    hl_gauss,
+)
+>>>>>>> 279c0ca (Fixes build errors due to name conflicts)
 
 
 torch.set_float32_matmul_precision("medium")
