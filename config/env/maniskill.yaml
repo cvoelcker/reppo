@@ -1,5 +1,5 @@
 type: maniskill
-name:
+name: PickCube-v1
 reconfiguration_freq: 1
 partial_reset: true
 asymmetric_obs: false

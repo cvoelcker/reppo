@@ -8,7 +8,7 @@ from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 app_launcher = AppLauncher(headless=True)
 simulation_app = app_launcher.app
 
-
+# Copied from https://github.com/younggyoseo/FastTD3/blob/main/fast_td3/environments/isaaclab_env.py
 
 class IsaacLabEnv:
     """Wrapper for IsaacLab environments to be compatible with MuJoCo Playground"""

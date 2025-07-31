@@ -19,9 +19,9 @@ class ManiSkillWrapper(Wrapper):
 
         self.partial_reset = partial_reset
 
-        self.returns = torch.zeros(env.num_envs, dtype=torch.float32, device=device)
-        self.episode_len = torch.zeros(env.num_envs, dtype=torch.float32, device=device)
-        self.success = torch.zeros(env.num_envs, dtype=torch.float32, device=device)
+        self.returns = torch.zeros(env.unwrapped.num_envs, dtype=torch.float32, device=device)
+        self.episode_len = torch.zeros(env.unwrapped.num_envs, dtype=torch.float32, device=device)
+        self.success = torch.zeros(env.unwrapped.num_envs, dtype=torch.float32, device=device)
 
     @property
     def unwrapped(self):
@@ -48,7 +48,8 @@ class ManiSkillWrapper(Wrapper):
         """
         Resets the environment and returns the initial observation.
         """
-        return self.env.reset(seed=seed, options=options)
+        obs, info = self.env.reset(seed=seed, options=options)
+        return obs
 
     def step(self, action):
         """

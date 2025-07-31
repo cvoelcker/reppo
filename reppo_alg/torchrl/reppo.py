@@ -12,11 +12,11 @@ from omegaconf import DictConfig, OmegaConf
 
 import wandb
 
-from reppo_alg.torchrl.reppo import EmpiricalNormalization, hl_gauss
+from reppo_alg.torchrl.reppo_util import EmpiricalNormalization, hl_gauss
 
 try:
     # Required for avoiding IsaacGym import error
-    import isaacgym
+    import isaacgym 
 except ImportError:
     pass
 
@@ -153,7 +153,7 @@ def make_collect_fn(cfg: DictConfig, env):
                         "dones": dones.unsqueeze(-1).float(),
                         "truncations": truncations.unsqueeze(-1).float(),
                     },
-                    batch_size=(env.num_envs,),
+                    batch_size=(env.unwrapped.num_envs,),
                 )
             )
             info_list.append(infos)
@@ -375,7 +375,7 @@ def make_evaluate_fn(cfg: DictConfig, eval_envs):
             num_eval_envs, dtype=torch.bool, device=train_state.device
         )
 
-        if cfg.env.type == "isaaclab" or cfg.env.asymmetric_observation:
+        if cfg.env.type == "isaaclab" or eval_envs.asymmetric_obs:
             obs, _ = eval_envs.reset(random_start_init=False)
         else:
             obs = eval_envs.reset()

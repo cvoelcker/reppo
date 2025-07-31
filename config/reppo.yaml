@@ -5,11 +5,11 @@ defaults:
 
 hyperparameters:
   # env and run settings (mostly don't touch)
-  total_time_steps: 50_000_000
+  total_time_steps: 3_000_000
   normalize_env: true
   max_episode_steps: 1000
   eval_interval: 2
-  num_eval: 20
+  num_eval: 5
 
   # optimization settings (seem very stable)
   lr: 3e-4
