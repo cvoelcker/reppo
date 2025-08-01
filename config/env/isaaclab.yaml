@@ -1,3 +1,5 @@
 type: isaaclab
 name: Isaac-Cartpole-v0
 action_bounds: [-1, 1]
+vmin: -15
+vmax: 15

@@ -19,7 +19,7 @@ def make_envs(cfg: DictConfig, device: torch.device, seed: int = None) -> tuple:
             cfg.env.name,
             device.type,
             cfg.hyperparameters.num_envs,
-            cfg=seed,
+            seed=seed,
             action_bounds=cfg.env.action_bounds,
         )
         return envs, envs

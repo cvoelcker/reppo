@@ -2,13 +2,6 @@ from typing import Optional
 
 import gymnasium as gym
 import torch
-from isaaclab.app import AppLauncher
-from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
-
-app_launcher = AppLauncher(headless=True)
-simulation_app = app_launcher.app
-
-# Copied from https://github.com/younggyoseo/FastTD3/blob/main/fast_td3/environments/isaaclab_env.py
 
 class IsaacLabEnv:
     """Wrapper for IsaacLab environments to be compatible with MuJoCo Playground"""
@@ -21,6 +14,14 @@ class IsaacLabEnv:
         seed: int,
         action_bounds: Optional[float] = None,
     ):
+        from isaaclab.app import AppLauncher
+
+        app_launcher = AppLauncher(headless=True, device=device)
+        simulation_app = app_launcher.app
+
+        import isaaclab_tasks
+        from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+
         env_cfg = parse_env_cfg(
             task_name,
             device=device,
@@ -32,7 +33,15 @@ class IsaacLabEnv:
 
         self.num_envs = self.envs.unwrapped.num_envs
         self.max_episode_steps = self.envs.unwrapped.max_episode_length
-        self.action_bounds = action_bounds
+        self.device = device
+        # Convert action_bounds to tensor if provided
+        if action_bounds is not None:
+            # action_bounds should be [min, max] for scaling actions from [-1, 1] to [min, max]
+            self.action_min = torch.tensor(action_bounds[0], device=device, dtype=torch.float32)
+            self.action_max = torch.tensor(action_bounds[1], device=device, dtype=torch.float32)
+        else:
+            self.action_min = None
+            self.action_max = None
         self.num_obs = self.envs.unwrapped.single_observation_space["policy"].shape[0]
         self.asymmetric_obs = "critic" in self.envs.unwrapped.single_observation_space
         if self.asymmetric_obs:
@@ -58,9 +67,11 @@ class IsaacLabEnv:
 
     def step(
         self, actions: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
-        if self.action_bounds is not None:
-            actions = torch.clamp(actions, -1.0, 1.0) * self.action_bounds
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+        if self.action_min is not None and self.action_max is not None:
+            # Scale actions from [-1, 1] to [action_min, action_max]
+            actions = torch.clamp(actions, -1.0, 1.0)
+            actions = (actions + 1.0) * 0.5 * (self.action_max - self.action_min) + self.action_min
         obs_dict, rew, terminations, truncations, infos = self.envs.step(actions)
         dones = (terminations | truncations).to(dtype=torch.long)
         obs = obs_dict["policy"]
@@ -73,7 +84,7 @@ class IsaacLabEnv:
             "obs": obs,
             "critic_obs": critic_obs,
         }
-        return obs, rew, dones, info_ret
+        return obs, rew, dones, truncations, info_ret
 
     def render(self):
         raise NotImplementedError(

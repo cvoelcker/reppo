@@ -153,7 +153,7 @@ def make_collect_fn(cfg: DictConfig, env):
                         "dones": dones.unsqueeze(-1).float(),
                         "truncations": truncations.unsqueeze(-1).float(),
                     },
-                    batch_size=(env.unwrapped.num_envs,),
+                    batch_size=(env.num_envs,),
                 )
             )
             info_list.append(infos)
