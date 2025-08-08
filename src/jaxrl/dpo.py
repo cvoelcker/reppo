@@ -41,7 +41,9 @@ class Policy(typing.Protocol):
         pass
 
 
-class RPOConfig(struct.PyTreeNode):
+class DPOConfig(struct.PyTreeNode):
+    alpha: float
+    beta: float
     lr: float
     gamma: float
     lmbda: float
@@ -59,7 +61,6 @@ class RPOConfig(struct.PyTreeNode):
     anneal_lr: bool
     num_eval: int = 25
     max_episode_steps: int = 1000
-    rpo_noise: float = 0.5
 
 
 class Transition(struct.PyTreeNode):
@@ -74,7 +75,7 @@ class Transition(struct.PyTreeNode):
     info: dict[str, jax.Array]
 
 
-class RPOTrainState(nnx.TrainState):
+class DPOTrainState(nnx.TrainState):
     iteration: int
     time_steps: int
     last_env_state: EnvState
@@ -84,7 +85,7 @@ class RPOTrainState(nnx.TrainState):
     critic_normalization_state: NormalizationState | None = None
 
 
-class RPONetworks(nnx.Module):
+class DPONetworks(nnx.Module):
     def __init__(
         self,
         obs_dim: int,
@@ -122,17 +123,15 @@ class RPONetworks(nnx.Module):
     def critic(self, obs: jax.Array) -> jax.Array:
         return self.critic_module(obs).squeeze()
 
-    def actor(self, obs: jax.Array, noise: jax.Array = None) -> distrax.Distribution:
+    def actor(self, obs: jax.Array) -> distrax.Distribution:
         loc = self.actor_module(obs)
-        if noise is not None:
-            loc += noise
         pi = distrax.MultivariateNormalDiag(
             loc=loc, scale_diag=jnp.exp(self.log_std.value)
         )
         return pi
 
 
-def make_policy(train_state: RPOTrainState) -> Policy:
+def make_policy(train_state: DPOTrainState) -> Policy:
     normalizer = Normalizer()
 
     def policy(
@@ -194,11 +193,11 @@ def make_eval_fn(
 
 
 def make_init(
-    cfg: RPOConfig,
+    cfg: DPOConfig,
     env: Environment,
     env_params: EnvParams = None,
-) -> RPOTrainState:
-    def init(key: jax.random.PRNGKey) -> RPOTrainState:
+) -> DPOTrainState:
+    def init(key: jax.random.PRNGKey) -> DPOTrainState:
         # Number of calls to train_step
         num_train_steps = cfg.total_time_steps // (cfg.num_steps * cfg.num_envs)
         # Number of calls to train_iter, add 1 if not divisible by eval_interval
@@ -210,7 +209,7 @@ def make_init(
         )
         key, model_key = jax.random.split(key)
         # Intialize the model
-        networks = RPONetworks(
+        networks = DPONetworks(
             obs_dim=env.observation_space(env_params)[0].shape[0],
             critic_obs_dim=env.observation_space(env_params)[1].shape[0],
             action_dim=env.action_space(env_params).shape[0],
@@ -261,7 +260,7 @@ def make_init(
             critic_norm_state = None
 
         # Initialize the state observations of the environment
-        return RPOTrainState.create(
+        return DPOTrainState.create(
             iteration=0,
             time_steps=0,
             graphdef=nnx.graphdef(networks),
@@ -278,10 +277,10 @@ def make_init(
 
 
 def make_train_fn(
-    cfg: RPOConfig,
+    cfg: DPOConfig,
     env: Environment,
     env_params: EnvParams = None,
-    log_callback: Callable[[RPOTrainState, dict[str, jax.Array]], None] = None,
+    log_callback: Callable[[DPOTrainState, dict[str, jax.Array]], None] = None,
     num_seeds: int = 1,
 ):
     # Initialize the environment and wrap it to admit vectorized behavior.
@@ -295,8 +294,8 @@ def make_train_fn(
     )
 
     def collect_rollout(
-        key: PRNGKey, train_state: RPOTrainState
-    ) -> tuple[Transition, RPOTrainState]:
+        key: PRNGKey, train_state: DPOTrainState
+    ) -> tuple[Transition, DPOTrainState]:
         model = nnx.merge(train_state.graphdef, train_state.params)
 
         # Take a step in the environment
@@ -363,8 +362,8 @@ def make_train_fn(
         return transitions, train_state
 
     def learn_step(
-        key: PRNGKey, train_state: RPOTrainState, batch: Transition
-    ) -> tuple[RPOTrainState, dict[str, jax.Array]]:
+        key: PRNGKey, train_state: DPOTrainState, batch: Transition
+    ) -> tuple[DPOTrainState, dict[str, jax.Array]]:
         # Compute advantages and target values
         model = nnx.merge(train_state.graphdef, train_state.params)
         if cfg.normalize_env:
@@ -405,9 +404,9 @@ def make_train_fn(
             data,
         )
 
-        def update(train_state, key) -> tuple[RPOTrainState, dict[str, jax.Array]]:
+        def update(train_state, key) -> tuple[DPOTrainState, dict[str, jax.Array]]:
             def minibatch_update(carry, indices):
-                train_state, key = carry
+                idx, train_state = carry
                 # Sample data at indices from the batch
                 minibatch, advantages, target_values = jax.tree.map(
                     lambda x: jnp.take(x, indices, axis=0), data
@@ -418,15 +417,9 @@ def make_train_fn(
                     )
 
                 # Define the loss function
-                def loss_fn(params, key):
+                def loss_fn(params):
                     model = nnx.merge(train_state.graphdef, params)
-                    noise = jax.random.uniform(
-                        key,
-                        minibatch.action.shape,
-                        minval=-cfg.rpo_noise,
-                        maxval=cfg.rpo_noise,
-                    )
-                    pi = model.actor(minibatch.obs, noise=noise)
+                    pi = model.actor(minibatch.obs)
                     value = model.critic(minibatch.critic_obs)
                     log_prob = pi.log_prob(minibatch.action)
                     value_pred_clipped = minibatch.value + (
@@ -438,17 +431,25 @@ def make_train_fn(
                         (1.0 - minibatch.truncated)
                         * jnp.maximum(value_error, value_error_clipped)
                     )
-
-                    ratio = jnp.exp(log_prob - minibatch.log_prob)
-                    actor_loss1 = ratio * advantages
-                    actor_loss2 = (
-                        jnp.clip(ratio, 1 - cfg.clip_ratio, 1 + cfg.clip_ratio)
-                        * advantages
+                    log_diff = log_prob - minibatch.log_prob
+                    ratio = jnp.exp(log_diff)
+                    r1 = ratio - 1.0
+                    drift1 = jax.nn.relu(
+                        r1 * advantages
+                        - cfg.alpha * jax.nn.tanh(r1 * advantages / cfg.alpha)
                     )
-                    actor_loss = -jnp.mean(
-                        (1.0 - minibatch.truncated)
-                        * jnp.minimum(actor_loss1, actor_loss2)
+                    drift2 = jax.nn.relu(
+                        log_diff * advantages
+                        - cfg.beta * jax.nn.tanh(log_diff * advantages / cfg.beta)
                     )
+                    drift = jnp.where(
+                        advantages >= 0.0,
+                        drift1,
+                        drift2,
+                    )
+                    losses = ratio * advantages - drift
+                    mask = 1.0 - minibatch.truncated
+                    actor_loss = -jnp.mean(losses * mask)
                     entropy_loss = jnp.mean(pi.entropy())
 
                     loss = (
@@ -470,8 +471,7 @@ def make_train_fn(
                     )
 
                 grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-                key, noise_key = jax.random.split(key)
-                output, grads = grad_fn(train_state.params, noise_key)
+                output, grads = grad_fn(train_state.params)
 
                 # Global gradient norm (all parameters combined)
                 flat_grads, _ = jax.flatten_util.ravel_pytree(grads)
@@ -481,7 +481,7 @@ def make_train_fn(
                 metrics["advantages"] = advantages
                 metrics["global_grad_norm"] = global_grad_norm
                 train_state = train_state.apply_gradients(grads)
-                return (train_state, key), metrics
+                return (idx + 1, train_state), metrics
 
             # Shuffle data and split into mini-batches
             key, shuffle_key = jax.random.split(key)
@@ -496,11 +496,10 @@ def make_train_fn(
                 ),
                 indices,
             )
-            key, noise_key = jax.random.split(key)
+
             # Run model update for each mini-batch
-            carry = (train_state, noise_key)
-            (train_state, _), metrics = jax.lax.scan(
-                minibatch_update, carry, minibatch_idxs
+            train_state, metrics = jax.lax.scan(
+                minibatch_update, train_state, minibatch_idxs
             )
             # Compute mean metrics across mini-batches
             metrics = jax.tree.map(lambda x: x.mean(0), metrics)
@@ -508,9 +507,9 @@ def make_train_fn(
 
         # Update the model for a number of epochs
         key, train_key = jax.random.split(key)
-        train_state, update_metrics = jax.lax.scan(
+        (_, train_state), update_metrics = jax.lax.scan(
             f=update,
-            init=train_state,
+            init=(1, train_state),
             xs=jax.random.split(train_key, cfg.num_epochs),
         )
         # Get metrics from the last epoch
@@ -519,11 +518,11 @@ def make_train_fn(
         return train_state, update_metrics
 
     # Define the training loop
-    def train_fn(key: PRNGKey) -> tuple[RPOTrainState, dict]:
+    def train_fn(key: PRNGKey) -> tuple[DPOTrainState, dict]:
         def train_eval_step(key, train_state):
             def train_step(
-                state: RPOTrainState, key: PRNGKey
-            ) -> tuple[RPOTrainState, dict[str, jax.Array]]:
+                state: DPOTrainState, key: PRNGKey
+            ) -> tuple[DPOTrainState, dict[str, jax.Array]]:
                 key, rollout_key, learn_key = jax.random.split(key, 3)
                 # Collect trajectories from `state`
                 transitions, state = collect_rollout(key=rollout_key, train_state=state)
@@ -553,8 +552,8 @@ def make_train_fn(
             return train_state, metrics
 
         def loop_body(
-            train_state: RPOTrainState, key: PRNGKey
-        ) -> tuple[RPOTrainState, dict]:
+            train_state: DPOTrainState, key: PRNGKey
+        ) -> tuple[DPOTrainState, dict]:
             # Map execution of the train+eval step across num_seeds (will be looped using jax.lax.scan)
             key, subkey = jax.random.split(key)
             train_state, metrics = jax.vmap(train_eval_step)(
@@ -663,7 +662,7 @@ def run(cfg: DictConfig):
 
     key = jax.random.PRNGKey(cfg.seed)
     train_fn = make_train_fn(
-        cfg=RPOConfig(**cfg.hyperparameters),
+        cfg=DPOConfig(**cfg.hyperparameters),
         env=env,
         log_callback=log_callback,
         num_seeds=cfg.num_seeds,
@@ -677,7 +676,7 @@ def run(cfg: DictConfig):
             entity=cfg.wandb.entity,
             tags=[cfg.name, cfg.env.name, cfg.env.type, *cfg.tags],
             config=OmegaConf.to_container(cfg),
-            name=f"rpo-{cfg.name}-{cfg.env.name.lower()}",
+            name=f"dpo-{cfg.name}-{cfg.env.name.lower()}",
             save_code=True,
         )
         start = time.perf_counter()
@@ -709,9 +708,9 @@ def tune(cfg: DictConfig):
         run_cfg = OmegaConf.to_container(cfg)
         for k, v in dict(wandb.config).items():
             run_cfg["experiment"]["hyperparameters"][k] = v
-        rpo_cfg = RPOConfig(**run_cfg["experiment"]["hyperparameters"])
+        dpo_cfg = DPOConfig(**run_cfg["experiment"]["hyperparameters"])
         train_fn = make_train_fn(
-            cfg=rpo_cfg,
+            cfg=dpo_cfg,
             env=env,
             log_callback=log_callback,
             num_seeds=cfg.num_seeds,
@@ -742,7 +741,7 @@ def tune(cfg: DictConfig):
     wandb.agent(sweep_id, function=train_agent, count=cfg.tune.num_runs)
 
 
-@hydra.main(version_base=None, config_path="../../config", config_name="rpo")
+@hydra.main(version_base=None, config_path="../../config", config_name="dpo")
 def main(cfg: DictConfig):
     if cfg.tune:
         tune(cfg)

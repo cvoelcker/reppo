@@ -3,6 +3,8 @@ defaults:
   - _self_
 
 hyperparameters:
+    alpha: 2.0
+    beta: 0.6
     lr: 3e-4
     gamma: 0.99
     lmbda: 0.95
@@ -20,9 +22,8 @@ hyperparameters:
     anneal_lr: False
     num_eval: 20
     max_episode_steps: 1000
-    rpo_noise: 0.5
-name: "rpo"
-tags: ["rpo_baseline_retuned"]
+name: "dpo"
+tags: ["dpo_baseline_retuned"]
 seed: 0
 num_seeds: 1
 tune: false
