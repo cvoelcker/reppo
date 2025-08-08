@@ -30,4 +30,4 @@ trials: 8
 wandb:
   mode: "online" # set to online to activate wandb
   entity: "viper_svg"
-  project: "online_sac"
+  project: "reppo"
