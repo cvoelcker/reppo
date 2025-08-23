@@ -24,8 +24,8 @@ from src.env_utils.jax_wrappers import (
     LogWrapper,
     MjxGymnaxWrapper,
 )
-from src.jaxrl import utils
-from src.jaxrl.normalization import NormalizationState, Normalizer
+from src.algorithms import utils
+from src.algorithms.normalization import NormalizationState, Normalizer
 
 logging.basicConfig(level=logging.INFO)
 

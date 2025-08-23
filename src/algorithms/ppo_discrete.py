@@ -5,6 +5,7 @@ import typing
 from typing import Callable, Optional
 
 import distrax
+import gymnax
 import hydra
 import jax
 import optax
@@ -19,13 +20,14 @@ from omegaconf import DictConfig, OmegaConf
 
 import wandb
 from src.env_utils.jax_wrappers import (
+    BatchEnv,
     BraxGymnaxWrapper,
     ClipAction,
     LogWrapper,
     MjxGymnaxWrapper,
 )
-from src.jaxrl import utils
-from src.jaxrl.normalization import NormalizationState, Normalizer
+from src.algorithms import utils
+from src.algorithms.normalization import NormalizationState, Normalizer
 
 logging.basicConfig(level=logging.INFO)
 
@@ -59,6 +61,7 @@ class PPOConfig(struct.PyTreeNode):
     anneal_lr: bool
     num_eval: int = 25
     max_episode_steps: int = 1000
+    hidden_dim: int = 64
 
 
 class Transition(struct.PyTreeNode):
@@ -109,7 +112,6 @@ class PPONetworks(nnx.Module):
             nnx.tanh,
             linear_layer(hidden_dim, action_dim, scale=0.01),
         )
-        self.log_std = nnx.Param(jnp.zeros(action_dim))
         self.critic_module = nnx.Sequential(
             linear_layer(critic_obs_dim, hidden_dim),
             nnx.tanh,
@@ -122,10 +124,8 @@ class PPONetworks(nnx.Module):
         return self.critic_module(obs).squeeze()
 
     def actor(self, obs: jax.Array) -> distrax.Distribution:
-        loc = self.actor_module(obs)
-        pi = distrax.MultivariateNormalDiag(
-            loc=loc, scale_diag=jnp.exp(self.log_std.value)
-        )
+        logits = self.actor_module(obs)
+        pi = distrax.Categorical(logits=logits)
         return pi
 
 
@@ -208,9 +208,10 @@ def make_init(
         key, model_key = jax.random.split(key)
         # Intialize the model
         networks = PPONetworks(
-            obs_dim=env.observation_space(env_params)[0].shape[0],
-            critic_obs_dim=env.observation_space(env_params)[1].shape[0],
-            action_dim=env.action_space(env_params).shape[0],
+            obs_dim=env.observation_space(env_params).shape[0],
+            critic_obs_dim=env.observation_space(env_params).shape[0],
+            action_dim=env.action_space(env_params).n,
+            hidden_dim=cfg.hidden_dim,
             rngs=nnx.Rngs(model_key),
         )
 
@@ -234,7 +235,7 @@ def make_init(
         # Reset and fully initialize the environment
         key, env_key = jax.random.split(key)
         env_key = jax.random.split(env_key, cfg.num_envs)
-        obs, critic_obs, env_state = env.reset(env_key)
+        obs, env_state = env.reset(env_key)
         # randomize initial time step to prevent all envs stepping in tandem
         _env_state = env_state.unwrapped()
         key, randomize_steps_key = jax.random.split(key)
@@ -249,13 +250,9 @@ def make_init(
         if cfg.normalize_env:
             normalizer = Normalizer()
             norm_state = normalizer.init(obs)
-            critic_normalizer = Normalizer()
-            critic_norm_state = critic_normalizer.init(critic_obs)
             obs = normalizer.normalize(norm_state, obs)
-            critic_obs = critic_normalizer.normalize(critic_norm_state, critic_obs)
         else:
             norm_state = None
-            critic_norm_state = None
 
         # Initialize the state observations of the environment
         return PPOTrainState.create(
@@ -266,9 +263,9 @@ def make_init(
             tx=optimizer,
             last_env_state=env_state,
             last_obs=obs,
-            last_critic_obs=critic_obs,
+            last_critic_obs=obs,
             normalization_state=norm_state,
-            critic_normalization_state=critic_norm_state,
+            critic_normalization_state=norm_state
         )
 
     return init
@@ -283,7 +280,7 @@ def make_train_fn(
 ):
     # Initialize the environment and wrap it to admit vectorized behavior.
     env_params = env_params or env.default_params
-    env = ClipAction(env)
+    env = BatchEnv(env)
     env = LogWrapper(env, cfg.num_envs)
     eval_fn = make_eval_fn(env, cfg.max_episode_steps)
     normalizer = Normalizer()
@@ -313,7 +310,7 @@ def make_train_fn(
             action = pi.sample(seed=act_key)
             # Take a step in the environment
             step_key = jax.random.split(step_key, cfg.num_envs)
-            next_obs, next_critic_obs, next_env_state, reward, done, info = env.step(
+            next_obs, next_env_state, reward, done, info = env.step(
                 step_key, env_state, action.clip(-1.0 + 1e-4, 1.0 - 1e-4)
             )
             # Record the transition
@@ -648,12 +645,8 @@ def run(cfg: DictConfig):
     logging.info(OmegaConf.to_yaml(cfg))
 
     # Set up the experimental environment
-    if cfg.env.type == "brax":
-        env = BraxGymnaxWrapper(
-            cfg.env.name
-        )  # , episode_length=cfg.env.max_episode_steps
-    elif cfg.env.type == "mjx":
-        env = MjxGymnaxWrapper(cfg.env.name, episode_length=cfg.env.max_episode_steps)
+    if cfg.env.type == "gymnax":
+        env, env_params = gymnax.make(cfg.env.name)
     else:
         raise ValueError(f"Unknown environment type: {cfg.env.type}")
 
@@ -661,6 +654,7 @@ def run(cfg: DictConfig):
     train_fn = make_train_fn(
         cfg=PPOConfig(**cfg.hyperparameters),
         env=env,
+        env_params=env_params,
         log_callback=log_callback,
         num_seeds=cfg.num_seeds,
     )

@@ -20,6 +20,8 @@ hyperparameters:
     anneal_lr: False
     num_eval: 20
     max_episode_steps: 1000
+    hidden_dim: 64
+    
 name: "ppo"
 tags: ["ppo_baseline_retuned"]
 seed: 0

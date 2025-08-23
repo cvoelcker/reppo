@@ -57,6 +57,7 @@ class MjxGymnaxWrapper(Environment):
             self.dict_obs_key = "privileged_state"
         else:
             self.dict_obs_key = "state"
+        self.asymmetric_observation = asymmetric_observation
         print(self.dict_obs_key)
         super().__init__()
 
@@ -68,22 +69,23 @@ class MjxGymnaxWrapper(Environment):
         )
 
     def observation_space(self, params):
-        if self.dict_obs:
-            return Box(
-                low=-float("inf"),
-                high=float("inf"),
-                shape=self.env.observation_size["state"],
-            ), Box(
-                low=-float("inf"),
-                high=float("inf"),
-                shape=self.env.observation_size[self.dict_obs_key],
+        if self.asymmetric_observation:
+            return gymnax.environments.spaces.Dict(
+                {
+                    "state": gymnax.environments.spaces.Box(
+                        low=-float("inf"),
+                        high=float("inf"),
+                        shape=self.env.observation_size["state"],
+                    ),
+                    "privileged_state": gymnax.environments.spaces.Box(
+                        low=-float("inf"),
+                        high=float("inf"),
+                        shape=self.env.observation_size["privileged_state"],
+                    ),
+                }
             )
         else:
             return Box(
-                low=-float("inf"),
-                high=float("inf"),
-                shape=(self.env.observation_size,),
-            ), Box(
                 low=-float("inf"),
                 high=float("inf"),
                 shape=(self.env.observation_size,),
@@ -93,26 +95,48 @@ class MjxGymnaxWrapper(Environment):
     def default_params(self) -> gymnax.EnvParams:
         return gymnax.EnvParams()
 
+    def _get_obs(self, state):
+        if self.asymmetric_observation:
+            obs = {
+                "state": state.obs["state"] if self.dict_obs else state.obs[..., 0, :],
+                "privileged_state": state.obs["privileged_state"] if self.dict_obs else state.obs[..., 1, :],
+            }
+        else:
+            obs = state.obs
+        return obs
+
     def reset(self, key):
         state = self.env.reset(key)
         # state.info["truncation"] = 0.0
-        obs = state.obs if not self.dict_obs else state.obs["state"]
-        critic_obs = state.obs if not self.dict_obs else state.obs[self.dict_obs_key]
-        return obs, critic_obs, state
+        obs = self._get_obs(state)
+        return obs, state
 
     def step(self, key, state, action):
         # action = jnp.nan_to_num(action, 0.0)
         state = self.env.step(state, action)
-        obs = state.obs if not self.dict_obs else state.obs["state"]
-        critic_obs = state.obs if not self.dict_obs else state.obs[self.dict_obs_key]
+        obs = self._get_obs(state)
         return (
             obs,
-            critic_obs,
             state,
             state.reward * self.reward_scale,
             state.done > 0.5,
             {},
         )
+
+
+class BatchEnv(Wrapper):
+    def __init__(self, env: environment.Environment):
+        super().__init__(env)
+
+    def reset(self, key):
+        obs, env_state = jax.vmap(self.env.reset)(key)
+        return obs, env_state
+
+    def step(self, key, state, action):
+        obs, env_state, reward, done, info = jax.vmap(self.env.step)(
+            key, state.env_state, action
+        )
+        return obs, env_state, reward, done, info
 
 
 @struct.dataclass
@@ -142,7 +166,7 @@ class LogWrapper(Wrapper):
 
     @partial(jax.jit, static_argnums=(0,))
     def reset(self, key) -> Tuple[chex.Array, environment.EnvState]:
-        obs, critic_obs, env_state = self.env.reset(key)
+        obs, env_state = self.env.reset(key)
         state = LogEnvState(
             env_state=env_state,
             episode_returns=jnp.zeros((self.num_envs,)),
@@ -160,7 +184,7 @@ class LogWrapper(Wrapper):
                 ),
             },
         )
-        return obs, critic_obs, state
+        return obs, state
 
     @partial(jax.jit, static_argnums=(0,))
     def step(
@@ -169,7 +193,7 @@ class LogWrapper(Wrapper):
         state: environment.EnvState,
         action: Union[int, float],
     ) -> Tuple[chex.Array, environment.EnvState, float, bool, dict]:
-        obs, critic_obs, env_state, reward, done, info = self.env.step(
+        obs, env_state, reward, done, info = self.env.step(
             key, state.env_state, action
         )
         new_episode_return = state.episode_returns + reward
@@ -194,7 +218,7 @@ class LogWrapper(Wrapper):
             truncated=env_state.info["truncation"],
             info=info,
         )
-        return obs, critic_obs, state, reward, done, info
+        return obs, state, reward, done, info
 
 
 class BraxGymnaxWrapper:
@@ -268,8 +292,6 @@ class ClipAction(Wrapper):
 class NormalizeVecObsEnvState:
     mean: jnp.ndarray
     var: jnp.ndarray
-    critic_mean: jnp.ndarray
-    critic_var: jnp.ndarray
     count: float
     env_state: environment.EnvState
     truncated: float
@@ -287,15 +309,16 @@ class NormalizeVec(Wrapper):
         super().__init__(env)
 
     def _init_state(self, key):
-        obs, critic_obs, env_state = self.env.reset(key)
+        obs, env_state = self.env.reset(key)
         return NormalizeVecObsEnvState(
-            mean=jnp.mean(obs, axis=0),
-            var=jnp.var(obs, axis=0),
-            critic_mean=jnp.mean(critic_obs, axis=0),
-            critic_var=jnp.var(critic_obs, axis=0),
-            count=obs.shape[0],
+            mean=jax.tree.map(lambda x: jnp.mean(x, axis=0), obs),
+            var=jax.tree.map(lambda x: jnp.var(x, axis=0), obs),
+            count=jax.tree.map(lambda x: x.shape[0], obs),
             env_state=env_state,
         )
+
+    def _normalize_obs(self, obs, mean, var):
+        return (obs - mean) / jnp.sqrt(var + 1e-2)
 
     def _compute_stats(self, mean, var, count, obs):
         batch_mean = jnp.mean(obs, axis=0)
@@ -311,63 +334,55 @@ class NormalizeVec(Wrapper):
         M2 = m_a + m_b + jnp.square(delta) * count * batch_count / tot_count
         new_var = M2 / tot_count
 
-        return new_mean, new_var
+        return new_mean, new_var, tot_count
 
     def reset(self, key, params=None):
-        obs, critic_obs, env_state = self.env.reset(key)
+        obs, env_state = self.env.reset(key)
         if params is not None:
             mean = params.mean
             var = params.var
-            critic_mean = params.critic_mean
-            critic_var = params.critic_var
             count = params.count
         else:
-            mean = jnp.mean(obs, axis=0)
-            var = jnp.var(obs, axis=0)
-            critic_mean = jnp.mean(critic_obs, axis=0)
-            critic_var = jnp.var(critic_obs, axis=0)
-            count = obs.shape[0]
+            mean = jax.tree.map(lambda x: jnp.mean(x, axis=0), obs)
+            var = jax.tree.map(lambda x: jnp.var(x, axis=0), obs)
+            count = jax.tree.map(lambda x: x.shape[0], obs)
+
         state = NormalizeVecObsEnvState(
             mean=mean,
             var=var,
-            critic_mean=critic_mean,
-            critic_var=critic_var,
             count=count,
             env_state=env_state,
             truncated=env_state.truncated,
             info=env_state.info,
         )
         return (
-            (obs - state.mean) / jnp.sqrt(state.var + 1e-2),
-            (critic_obs - state.critic_mean) / jnp.sqrt(state.critic_var + 1e-2),
+            jax.tree.map(self._normalize_obs, obs, state.mean, state.var),
             state,
         )
 
     def step(self, key, state, action):
-        obs, critic_obs, env_state, reward, done, info = self.env.step(
+        obs, env_state, reward, done, info = self.env.step(
             key, state.env_state, action
         )
 
-        new_mean, new_var = self._compute_stats(state.mean, state.var, state.count, obs)
-        new_critic_mean, new_critic_var = self._compute_stats(
-            state.critic_mean, state.critic_var, state.count, critic_obs
+        stats = jax.tree.map(
+            lambda m, v, c, o: self._compute_stats(m, v, c, o),
+            state.mean,
+            state.var,
+            state.count,
+            obs
         )
 
-        new_count = state.count + obs.shape[0]
-
         state = NormalizeVecObsEnvState(
-            mean=new_mean,
-            var=new_var,
-            critic_mean=new_critic_mean,
-            critic_var=new_critic_var,
-            count=new_count,
+            mean=jax.tree.map(lambda x: x[0], stats),
+            var=jax.tree.map(lambda x: x[1], stats),
+            count=jax.tree.map(lambda x: x[2], stats),
             env_state=env_state,
             truncated=env_state.truncated,
             info=env_state.info,
         )
         return (
-            (obs - state.mean) / jnp.sqrt(state.var + 1e-2),
-            (critic_obs - state.critic_mean) / jnp.sqrt(state.critic_var + 1e-2),
+            jax.tree.map(self._normalize_obs, obs, state.mean, state.var),
             state,
             reward,
             done,

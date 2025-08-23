@@ -24,7 +24,7 @@ from src.env_utils.jax_wrappers import (
     MjxGymnaxWrapper,
     NormalizeVec,
 )
-from src.jaxrl import utils
+from src.algorithms import utils
 from src.networks.jax_models import (
     CategoricalCriticNetwork,
     CriticNetwork,
