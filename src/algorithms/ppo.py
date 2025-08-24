@@ -140,17 +140,17 @@ class PPONetworks(nnx.Module):
 
     def critic(self, obs: jax.Array) -> jax.Array:
         if self.asymmetric_obs:
-            assert (
-                isinstance(obs, dict) and "privileged_state" in obs
-            ), "Privileged state must be provided for asymmetric observations."
+            assert isinstance(obs, dict) and "privileged_state" in obs, (
+                "Privileged state must be provided for asymmetric observations."
+            )
             obs = obs["privileged_state"]
         return self.critic_module(obs).squeeze()
 
     def actor(self, obs: jax.Array) -> distrax.Distribution:
         if self.asymmetric_obs:
-            assert (
-                isinstance(obs, dict) and "state" in obs
-            ), "State must be provided for actor."
+            assert isinstance(obs, dict) and "state" in obs, (
+                "State must be provided for actor."
+            )
             obs = obs["state"]
         loc = self.actor_module(obs)
         if self.discrete_action:
@@ -159,7 +159,7 @@ class PPONetworks(nnx.Module):
             pi = distrax.MultivariateNormalDiag(
                 loc=loc, scale_diag=jnp.exp(self.log_std.value)
             )
-            return pi
+        return pi
 
 
 def make_policy(train_state: PPOTrainState) -> Policy:
@@ -223,7 +223,7 @@ def make_eval_fn(
     return evaluation_fn
 
 
-def make_init(
+def make_init_fn(
     cfg: PPOConfig,
     env: Environment,
     env_params: EnvParams = None,
@@ -266,19 +266,7 @@ def make_init(
 
         # Reset and fully initialize the environment
         key, env_key = jax.random.split(key)
-        env_key = jax.random.split(env_key, cfg.num_envs)
-        obs, env_state = env.reset(env_key)
-        # randomize initial time step to prevent all envs stepping in tandem
-        if isinstance(env_state.unwrapped(), State):
-            _env_state = env_state.unwrapped()
-            key, randomize_steps_key = jax.random.split(key)
-            _env_state.info["steps"] = jax.random.randint(
-                randomize_steps_key,
-                _env_state.info["steps"].shape,
-                0,
-                cfg.max_episode_steps,
-            ).astype(jnp.float32)
-            env_state.set_env_state(_env_state)
+        obs, env_state = init_env_state(env_key, cfg, env)
 
         if cfg.normalize_env:
             normalizer = Normalizer()
@@ -302,23 +290,7 @@ def make_init(
     return init
 
 
-def make_train_fn(
-    cfg: PPOConfig,
-    env: Environment,
-    env_params: EnvParams = None,
-    log_callback: Callable[[PPOTrainState, dict[str, jax.Array]], None] = None,
-    num_seeds: int = 1,
-):
-    # Initialize the environment and wrap it to admit vectorized behavior.
-    env_params = env_params or env.default_params
-    env = ClipAction(env)
-    env = LogWrapper(env, cfg.num_envs)
-    eval_fn = make_eval_fn(env, cfg.max_episode_steps)
-    normalizer = Normalizer()
-    eval_interval = int(
-        (cfg.total_time_steps / (cfg.num_steps * cfg.num_envs)) // cfg.num_eval
-    )
-
+def make_rollout_fn(cfg: DictConfig, env: Environment, normalizer: Normalizer):
     def collect_rollout(
         key: PRNGKey, train_state: PPOTrainState
     ) -> tuple[Transition, PPOTrainState]:
@@ -381,7 +353,13 @@ def make_train_fn(
 
         return transitions, train_state
 
-    def learn_step(
+    return collect_rollout
+
+def make_loss_fn()
+
+def make_learner_fn(cfg: DictConfig, normalizer: Normalizer):
+
+    def learner_fn(
         key: PRNGKey, train_state: PPOTrainState, batch: Transition
     ) -> tuple[PPOTrainState, dict[str, jax.Array]]:
         # Compute advantages and target values
@@ -536,107 +514,87 @@ def make_train_fn(
 
         return train_state, update_metrics
 
+    return learner_fn
+
+
+def make_train_fn(
+    cfg: PPOConfig,
+    env: Environment,
+    env_params: EnvParams = None,
+    log_callback: Callable[[PPOTrainState, dict[str, jax.Array]], None] = None,
+    num_seeds: int = 1,
+):
+    # Initialize the environment and wrap it to admit vectorized behavior.
+    env_params = env_params or env.default_params
+    env = LogWrapper(env, cfg.num_envs)
+    normalizer = Normalizer()
+    eval_interval = int(
+        (cfg.total_time_steps / (cfg.num_steps * cfg.num_envs)) // cfg.num_eval
+    )
+    eval_fn = make_eval_fn(env, cfg.max_episode_steps)
+    rollout_fn = make_rollout_fn(cfg, env, normalizer)
+    learner_fn = make_learner_fn(cfg, normalizer)
+
+    def train_step(
+        state: PPOTrainState, key: PRNGKey
+    ) -> tuple[PPOTrainState, dict[str, jax.Array]]:
+        key, rollout_key, learn_key = jax.random.split(key, 3)
+        # Collect trajectories from `state`
+        transitions, state = rollout_fn(key=rollout_key, train_state=state)
+        # Execute an update to the policy with `transitions`
+        state, update_metrics = learner_fn(
+            key=learn_key, train_state=state, batch=transitions
+        )
+        metrics = {**update_metrics, **update_metrics}
+        state = state.replace(iteration=state.iteration + 1)
+        return state, metrics
+
+    def train_eval_step(key, train_state):
+        train_key, eval_key = jax.random.split(key)
+        train_state, train_metrics = jax.lax.scan(
+            f=train_step,
+            init=train_state,
+            xs=jax.random.split(train_key, eval_interval),
+        )
+        train_metrics = jax.tree.map(lambda x: x[-1], train_metrics)
+        policy = make_policy(train_state)
+        eval_metrics = eval_fn(eval_key, policy)
+        metrics = {
+            "time_step": train_state.time_steps,
+            **utils.prefix_dict("train", train_metrics),
+            **utils.prefix_dict("eval", eval_metrics),
+        }
+
+        return train_state, metrics
+
+    def train_eval_loop_body(
+        train_state: PPOTrainState, key: PRNGKey
+    ) -> tuple[PPOTrainState, dict]:
+        # Map execution of the train+eval step across num_seeds (will be looped using jax.lax.scan)
+        key, subkey = jax.random.split(key)
+        train_state, metrics = jax.vmap(train_eval_step)(
+            jax.random.split(subkey, num_seeds), train_state
+        )
+        jax.debug.callback(log_callback, train_state, metrics)
+        return train_state, metrics
+
     # Define the training loop
     def train_fn(key: PRNGKey) -> tuple[PPOTrainState, dict]:
-        def train_eval_step(key, train_state):
-            def train_step(
-                state: PPOTrainState, key: PRNGKey
-            ) -> tuple[PPOTrainState, dict[str, jax.Array]]:
-                key, rollout_key, learn_key = jax.random.split(key, 3)
-                # Collect trajectories from `state`
-                transitions, state = collect_rollout(key=rollout_key, train_state=state)
-                # Execute an update to the policy with `transitions`
-                state, update_metrics = learn_step(
-                    key=learn_key, train_state=state, batch=transitions
-                )
-                metrics = {**update_metrics, **update_metrics}
-                state = state.replace(iteration=state.iteration + 1)
-                return state, metrics
-
-            train_key, eval_key = jax.random.split(key)
-            train_state, train_metrics = jax.lax.scan(
-                f=train_step,
-                init=train_state,
-                xs=jax.random.split(train_key, eval_interval),
-            )
-            train_metrics = jax.tree.map(lambda x: x[-1], train_metrics)
-            policy = make_policy(train_state)
-            eval_metrics = eval_fn(eval_key, policy)
-            metrics = {
-                "time_step": train_state.time_steps,
-                **utils.prefix_dict("train", train_metrics),
-                **utils.prefix_dict("eval", eval_metrics),
-            }
-
-            return train_state, metrics
-
-        def loop_body(
-            train_state: PPOTrainState, key: PRNGKey
-        ) -> tuple[PPOTrainState, dict]:
-            # Map execution of the train+eval step across num_seeds (will be looped using jax.lax.scan)
-            key, subkey = jax.random.split(key)
-            train_state, metrics = jax.vmap(train_eval_step)(
-                jax.random.split(subkey, num_seeds), train_state
-            )
-            jax.debug.callback(log_callback, train_state, metrics)
-            return train_state, metrics
-
         # Initialize the policy, environment and map that across the number of random seeds
         num_train_steps = cfg.total_time_steps // (cfg.num_steps * cfg.num_envs)
         num_iterations = num_train_steps // eval_interval + int(
             num_train_steps % eval_interval != 0
         )
         key, init_key = jax.random.split(key)
-        train_state = jax.vmap(make_init(cfg, env, env_params))(
+        train_state = jax.vmap(make_init_fn(cfg, env, env_params))(
             jax.random.split(init_key, num_seeds)
         )
         keys = jax.random.split(key, num_iterations)
         # Run the training and evaluation loop from the initialized training state
-        state, metrics = jax.lax.scan(f=loop_body, init=train_state, xs=keys)
+        state, metrics = jax.lax.scan(f=train_eval_loop_body, init=train_state, xs=keys)
         return state, metrics
 
     return train_fn
-
-
-def plot_history(history: list[dict[str, jax.Array]]):
-    steps = jnp.array([m["time_step"][0] for m in history])
-    eval_return = jnp.array([m["eval/episode_return"].mean() for m in history])
-    eval_return_std = jnp.array([m["eval/episode_return"].std() for m in history])
-    fig = go.Figure(
-        [
-            go.Scatter(
-                x=steps,
-                y=eval_return,
-                name="Mean Episode Return",
-                mode="lines",
-                line=dict(color="blue"),
-                showlegend=False,
-            ),
-            go.Scatter(
-                x=steps,
-                y=eval_return + eval_return_std,
-                name="Upper Bound",
-                mode="lines",
-                line=dict(width=0),
-                showlegend=False,
-            ),
-            go.Scatter(
-                x=steps,
-                y=eval_return - eval_return_std,
-                name="Lower Bound",
-                mode="lines",
-                line=dict(width=0),
-                fill="tonexty",
-                fillcolor="rgba(50, 127, 168, 0.3)",
-                showlegend=False,
-            ),
-        ]
-    )
-    fig.update_layout(
-        xaxis=dict(title=dict(text="Environment Steps")),
-    )
-
-    return fig
 
 
 def run(cfg: DictConfig):
@@ -670,22 +628,7 @@ def run(cfg: DictConfig):
     logging.info(OmegaConf.to_yaml(cfg))
 
     # Set up the experimental environment
-    env_params = None
-    if cfg.env.type == "brax":
-        env = BraxGymnaxWrapper(
-            cfg.env.name
-        )  # , episode_length=cfg.env.max_episode_steps
-    elif cfg.env.type == "mjx":
-        env = MjxGymnaxWrapper(
-            cfg.env.name,
-            episode_length=cfg.env.max_episode_steps,
-            asymmetric_observation=cfg.env.asymmetric_observation,
-        )
-    elif cfg.env.type == "gymnax":
-        env, env_params = gymnax.make(cfg.env.name)
-        env = BatchEnv(env)
-    else:
-        raise ValueError(f"Unknown environment type: {cfg.env.type}")
+    env, env_params = make_env(cfg)
 
     key = jax.random.PRNGKey(cfg.seed)
     train_fn = make_train_fn(
@@ -716,6 +659,45 @@ def run(cfg: DictConfig):
         logging.info(f"Training took {duration:.2f} seconds.")
         # jnp.savez("metrics.npz", **metrics) # TODO: fix the directory here to save to a unique output directory
         wandb.finish()
+
+
+def make_env(cfg):
+    env_params = None
+    if cfg.env.type == "brax":
+        env = BraxGymnaxWrapper(
+            cfg.env.name
+        )  # , episode_length=cfg.env.max_episode_steps
+        env = ClipAction(env)
+    elif cfg.env.type == "mjx":
+        env = MjxGymnaxWrapper(
+            cfg.env.name,
+            episode_length=cfg.env.max_episode_steps,
+            asymmetric_observation=cfg.env.asymmetric_observation,
+        )
+        env = ClipAction(env)
+    elif cfg.env.type == "gymnax":
+        env, env_params = gymnax.make(cfg.env.name)
+        env = BatchEnv(env)
+    else:
+        raise ValueError(f"Unknown environment type: {cfg.env.type}")
+    return env, env_params
+
+
+def init_env_state(key: jax.Array, cfg: DictConfig, env: Environment):
+    key, env_key = jax.random.split(key)
+    env_key = jax.random.split(env_key, cfg.num_envs)
+    obs, env_state = env.reset(env_key)
+    if isinstance(env_state.unwrapped(), State):
+        _env_state = env_state.unwrapped()
+        key, randomize_steps_key = jax.random.split(key)
+        _env_state.info["steps"] = jax.random.randint(
+            randomize_steps_key,
+            _env_state.info["steps"].shape,
+            0,
+            cfg.max_episode_steps,
+        ).astype(jnp.float32)
+        env_state.set_env_state(_env_state)
+    return obs, env_state
 
 
 def tune(cfg: DictConfig):

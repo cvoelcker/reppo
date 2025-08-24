@@ -60,7 +60,7 @@ class MjxGymnaxWrapper(Environment):
         self.asymmetric_observation = asymmetric_observation
         print(self.dict_obs_key)
         super().__init__()
-
+    
     def action_space(self, params):
         return gymnax.environments.spaces.Box(
             low=-1.0,
@@ -99,7 +99,9 @@ class MjxGymnaxWrapper(Environment):
         if self.asymmetric_observation:
             obs = {
                 "state": state.obs["state"] if self.dict_obs else state.obs[..., 0, :],
-                "privileged_state": state.obs["privileged_state"] if self.dict_obs else state.obs[..., 1, :],
+                "privileged_state": state.obs["privileged_state"]
+                if self.dict_obs
+                else state.obs[..., 1, :],
             }
         else:
             obs = state.obs
@@ -120,7 +122,7 @@ class MjxGymnaxWrapper(Environment):
             state,
             state.reward * self.reward_scale,
             state.done > 0.5,
-            {},
+            state.info.copy(),
         )
 
 
@@ -133,9 +135,7 @@ class BatchEnv(Wrapper):
         return obs, env_state
 
     def step(self, key, state, action):
-        obs, env_state, reward, done, info = jax.vmap(self.env.step)(
-            key, state.env_state, action
-        )
+        obs, env_state, reward, done, info = jax.vmap(self.env.step)(key, state, action)
         return obs, env_state, reward, done, info
 
 
@@ -193,9 +193,7 @@ class LogWrapper(Wrapper):
         state: environment.EnvState,
         action: Union[int, float],
     ) -> Tuple[chex.Array, environment.EnvState, float, bool, dict]:
-        obs, env_state, reward, done, info = self.env.step(
-            key, state.env_state, action
-        )
+        obs, env_state, reward, done, info = self.env.step(key, state.env_state, action)
         new_episode_return = state.episode_returns + reward
         new_episode_length = state.episode_lengths + 1
         info["returned_episode_returns"] = (
@@ -215,8 +213,13 @@ class LogWrapper(Wrapper):
             returned_episode_lengths=state.returned_episode_lengths * (1 - done)
             + new_episode_length * done,
             timestep=state.timestep + 1,
-            truncated=env_state.info["truncation"],
-            info=info,
+            truncated=info.get("truncation", jnp.zeros_like(done, dtype=jnp.float32)),
+            info={
+                "returned_episode": done,
+                "returned_episode_returns": state.returned_episode_returns,
+                "timestep": state.timestep,
+                "returned_episode_lengths": state.returned_episode_lengths,
+            },
         )
         return obs, state, reward, done, info
 
@@ -361,16 +364,14 @@ class NormalizeVec(Wrapper):
         )
 
     def step(self, key, state, action):
-        obs, env_state, reward, done, info = self.env.step(
-            key, state.env_state, action
-        )
+        obs, env_state, reward, done, info = self.env.step(key, state.env_state, action)
 
         stats = jax.tree.map(
             lambda m, v, c, o: self._compute_stats(m, v, c, o),
             state.mean,
             state.var,
             state.count,
-            obs
+            obs,
         )
 
         state = NormalizeVecObsEnvState(
