@@ -355,8 +355,6 @@ def make_rollout_fn(cfg: DictConfig, env: Environment, normalizer: Normalizer):
 
     return collect_rollout
 
-def make_loss_fn()
-
 def make_learner_fn(cfg: DictConfig, normalizer: Normalizer):
 
     def learner_fn(
