@@ -1,7 +1,22 @@
+import time
 import distrax
+import logging
 import flax
+import gymnax
 import jax
 import jax.numpy as jnp
+from mujoco_playground import State
+from omegaconf import DictConfig
+import wandb
+from src.env_utils.jax_wrappers import (
+    BatchEnv,
+    BraxGymnaxWrapper,
+    ClipAction,
+    FlattenObsWrapper,
+    LogWrapper,
+    MjxGymnaxWrapper,
+)
+from gymnax.environments.environment import Environment
 
 
 def describe(values: jnp.ndarray, axis: tuple | int = 0) -> dict[str, jnp.ndarray]:
@@ -134,3 +149,75 @@ def simplical_softmax_cross_entropy(pred, target, dim=8):
     return jnp.sum(-target * jax.nn.log_softmax(pred, axis=-1), axis=-1).mean() / (
         shape / dim
     )
+
+
+def make_env(cfg: DictConfig) -> tuple[Environment, gymnax.EnvParams | None]:
+    env_params = None
+    if cfg.env.type == "brax":
+        env = BraxGymnaxWrapper(
+            cfg.env.name
+        )  # , episode_length=cfg.env.max_episode_steps
+        env = ClipAction(env)
+    elif cfg.env.type == "mjx":
+        env = MjxGymnaxWrapper(
+            cfg.env.name,
+            episode_length=cfg.env.max_episode_steps,
+            asymmetric_observation=cfg.env.asymmetric_observation,
+        )
+        env = ClipAction(env)
+    elif cfg.env.type == "gymnax":
+        env, env_params = gymnax.make(cfg.env.name)
+        env = FlattenObsWrapper(env)
+        env = BatchEnv(env)
+    else:
+        raise ValueError(f"Unknown environment type: {cfg.env.type}")
+
+    env = LogWrapper(env, num_envs=cfg.hyperparameters.num_envs)
+    return env, env_params
+
+
+def make_log_callback():
+    metric_history = []
+
+    def log_callback(state, metrics):
+        metrics["sys_time"] = time.perf_counter()
+        if len(metric_history) > 0:
+            num_env_steps = state.time_steps[0] - metric_history[-1]["time_step"][0]
+            seconds = metrics["sys_time"] - metric_history[-1]["sys_time"]
+            sps = num_env_steps / seconds
+        else:
+            sps = 0
+
+        metric_history.append(metrics)
+        episode_return = metrics["eval/episode_return"].mean()
+        # Use pop() with a default value of None in case 'advantages' key doesn't exist
+        advantages = metrics.pop("train/advantages", None)
+        logging.info(
+            f"step={state.time_steps[0]} episode_return={episode_return:.3f}, sps={sps:.2f}"
+        )
+        log_data = {
+            "eval/episode_return": episode_return,
+            **jax.tree.map(jnp.mean, filter_prefix("train", metrics)),
+        }
+        if advantages is not None:
+            log_data["train/advantages"] = wandb.Histogram(advantages)
+        wandb.log(log_data, step=state.time_steps[0])
+
+    return log_callback
+
+
+def init_env_state(key: jax.Array, cfg: DictConfig, env: Environment):
+    key, env_key = jax.random.split(key)
+    env_key = jax.random.split(env_key, cfg.num_envs)
+    obs, env_state = env.reset(env_key)
+    if isinstance(env_state.unwrapped(), State):
+        _env_state = env_state.unwrapped()
+        key, randomize_steps_key = jax.random.split(key)
+        _env_state.info["steps"] = jax.random.randint(
+            randomize_steps_key,
+            _env_state.info["steps"].shape,
+            0,
+            cfg.max_episode_steps,
+        ).astype(jnp.float32)
+        env_state.set_env_state(_env_state)
+    return obs, env_state

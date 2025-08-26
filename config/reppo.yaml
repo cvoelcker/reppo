@@ -1,7 +1,6 @@
 defaults:
   - env: brax
-  - platform: torch
-  - experiment_overrides: default
+  - logging: wandb_offline
   - _self_
 
 hyperparameters:
@@ -35,8 +34,8 @@ hyperparameters:
   exploration_base_envs: 0
 
   # critic architecture settings (need to be increased for MJX humanoid)
-  critic_hidden_dim: 512
-  actor_hidden_dim: 512
+  critic_hidden_dim: 64
+  actor_hidden_dim: 64
   vmin: ${env.vmin}
   vmax: ${env.vmax}
   num_bins: 151
@@ -70,18 +69,13 @@ hyperparameters:
   aux_loss_mult: 1.0
 
 measure_burnin: 3
-
 name: "reppo"
 seed: 0
 num_seeds: 1
 tune: false
 checkpoint_dir: null
 num_trials: 10
-tags: ["experimental"]
-wandb:
-  mode: "online" # set to online to activate wandb
-  entity: "viper_svg"
-  project: "reppo"
+tags: ["reppo"]
 
 hydra:
   job:

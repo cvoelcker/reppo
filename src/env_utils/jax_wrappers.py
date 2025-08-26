@@ -1,4 +1,5 @@
 from functools import partial
+import functools
 from typing import Any, Tuple, Union
 
 import chex
@@ -14,6 +15,7 @@ from gymnax.environments.spaces import Box
 from ml_collections import ConfigDict
 from mujoco_playground import MjxEnv, registry
 from mujoco_playground._src.wrapper import wrap_for_brax_training, Wrapper
+import numpy as np
 
 
 class MjxGymnaxWrapper(Environment):
@@ -58,9 +60,8 @@ class MjxGymnaxWrapper(Environment):
         else:
             self.dict_obs_key = "state"
         self.asymmetric_observation = asymmetric_observation
-        print(self.dict_obs_key)
         super().__init__()
-    
+
     def action_space(self, params):
         return gymnax.environments.spaces.Box(
             low=-1.0,
@@ -373,11 +374,14 @@ class NormalizeVec(Wrapper):
             state.count,
             obs,
         )
+        mean, var, count = jax.tree.transpose(
+            jax.tree.structure(obs), jax.tree.structure(("*", "*", "*")), stats
+        )
 
         state = NormalizeVecObsEnvState(
-            mean=jax.tree.map(lambda x: x[0], stats),
-            var=jax.tree.map(lambda x: x[1], stats),
-            count=jax.tree.map(lambda x: x[2], stats),
+            mean=mean,
+            var=var,
+            count=count,
             env_state=env_state,
             truncated=env_state.truncated,
             info=env_state.info,
@@ -389,3 +393,36 @@ class NormalizeVec(Wrapper):
             done,
             info,
         )
+
+
+class FlattenObsWrapper(Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+
+    def reset(self, key, params=None):
+        obs, env_state = self.env.reset(key)
+        return jax.tree.map(lambda x: x.reshape(-1), obs), env_state
+
+    def step(self, key, state, action):
+        obs, env_state, reward, done, info = self.env.step(key, state, action)
+        return (
+            jax.tree.map(lambda x: x.reshape(-1), obs),
+            env_state,
+            reward,
+            done,
+            info,
+        )
+
+    @functools.lru_cache(maxsize=None)
+    def observation_space(self, params):
+        def map_space(space):
+            if isinstance(space, spaces.Box):
+                low = jnp.reshape(space.low, (-1,))
+                high = jnp.reshape(space.high, (-1,))
+                return spaces.Box(
+                    low=low, high=high, shape=(np.prod(np.array(space.shape)).item(),)
+                )
+            else:
+                return space  # Return the space as is if it's not a Box
+
+        return jax.tree.map(map_space, self.env.observation_space(params))

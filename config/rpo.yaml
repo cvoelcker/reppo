@@ -1,34 +1,33 @@
 defaults:
   - env: brax
+  - logging: wandb_offline
   - _self_
 
 hyperparameters:
-    lr: 3e-4
-    gamma: 0.99
-    lmbda: 0.95
-    clip_ratio: 0.2
-    value_coef: 0.5
-    entropy_coef: 0.0
-    total_time_steps: 50_000_000
-    num_steps: 64
-    num_mini_batches: 32
-    num_envs: 2048
-    num_epochs: 16
-    max_grad_norm: 0.5
-    normalize_advantages: True
-    normalize_env: True
-    anneal_lr: False
-    num_eval: 20
-    max_episode_steps: 1000
-    rpo_noise: 0.5
+  action_noise: 0.5
+  lr: 3e-4
+  gamma: 0.99
+  lmbda: 0.95
+  clip_ratio: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.0
+  total_time_steps: 50_000_000
+  num_steps: 64
+  num_mini_batches: 32
+  num_envs: 2048
+  num_epochs: 16
+  max_grad_norm: 0.5
+  normalize_advantages: True
+  normalize_env: True
+  anneal_lr: False
+  num_eval: 20
+  max_episode_steps: 1000
+  hidden_dim: 64
+
 name: "rpo"
-tags: ["rpo_baseline_retuned"]
+tags: ["rpo"]
 seed: 0
 num_seeds: 1
 tune: false
 checkpoint_dir: null
-trials: 8 
-wandb:
-  mode: "online" # set to online to activate wandb
-  entity: "viper_svg"
-  project: "reppo"
+trials: 8
