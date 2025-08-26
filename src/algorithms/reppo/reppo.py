@@ -25,7 +25,7 @@ from src.algorithms.common import (
 from src.algorithms.normalization import Normalizer
 from src.algorithms import utils
 from src.env_utils.jax_wrappers import NormalizeVec
-from src.networks.jax_models import (
+from src.algorithms.reppo.networks import (
     CategoricalCriticNetwork,
     CriticNetwork,
     SACActorNetworks,
@@ -84,14 +84,14 @@ class ReppoConfig(struct.PyTreeNode):
     reward_scale: float = 1.0
 
 
-class SACTrainState(TrainState):
+class REPPOTrainState(TrainState):
     critic: nnx.TrainState
     actor: nnx.TrainState
     actor_target: nnx.TrainState
     normalization_state: PyTreeNode | None = None
 
 
-def make_reppo_policy_fn(cfg: DictConfig) -> Callable[[SACTrainState, bool], Policy]:
+def make_reppo_policy_fn(cfg: DictConfig) -> Callable[[REPPOTrainState, bool], Policy]:
     offset = (
         jnp.arange(cfg.num_envs - cfg.exploration_base_envs)[:, None]
         * (cfg.exploration_noise_max - cfg.exploration_noise_min)
@@ -106,7 +106,7 @@ def make_reppo_policy_fn(cfg: DictConfig) -> Callable[[SACTrainState, bool], Pol
         axis=0,
     )
 
-    def policy_fn(train_state: SACTrainState, eval: bool) -> Policy:
+    def policy_fn(train_state: REPPOTrainState, eval: bool) -> Policy:
         normalizer = Normalizer()
         actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
 
@@ -130,23 +130,13 @@ def make_reppo_policy_fn(cfg: DictConfig) -> Callable[[SACTrainState, bool], Pol
 def make_reppo_init_fn(
     cfg: ReppoConfig,
     env: Environment,
-    env_params: EnvParams = None,
-) -> Callable[[jax.Array], SACTrainState]:
-    def init(key: jax.random.PRNGKey) -> SACTrainState:
+    env_params: EnvParams | None = None,
+) -> Callable[[jax.Array], REPPOTrainState]:
+    
+    def init(key: Key) -> REPPOTrainState:
         # Number of calls to train_step
         key, model_key = jax.random.split(key)
         actor_networks = SACActorNetworks(
-            obs_dim=env.observation_space(env_params).shape[0],
-            action_dim=env.action_space(env_params).shape[0],
-            hidden_dim=cfg.actor_hidden_dim,
-            ent_start=cfg.ent_start,
-            kl_start=cfg.kl_start,
-            use_norm=cfg.use_actor_norm,
-            layers=cfg.num_actor_layers,
-            use_skip=cfg.use_actor_skip,
-            rngs=nnx.Rngs(model_key),
-        )
-        actor_target_networks = SACActorNetworks(
             obs_dim=env.observation_space(env_params).shape[0],
             action_dim=env.action_space(env_params).shape[0],
             hidden_dim=cfg.actor_hidden_dim,
@@ -212,8 +202,8 @@ def make_reppo_init_fn(
             tx=actor_optimizer,
         )
         actor_target_trainstate = nnx.TrainState.create(
-            graphdef=nnx.graphdef(actor_target_networks),
-            params=nnx.state(actor_target_networks),
+            graphdef=nnx.graphdef(actor_networks),
+            params=nnx.state(actor_networks),
             tx=optax.set_to_zero(),
         )
         critic_trainstate = nnx.TrainState.create(
@@ -233,7 +223,7 @@ def make_reppo_init_fn(
         else:
             norm_state = None
 
-        return SACTrainState.create(
+        return REPPOTrainState.create(
             graphdef=actor_trainstate.graphdef,
             params=actor_trainstate.params,
             tx=actor_trainstate.tx,
@@ -250,115 +240,11 @@ def make_reppo_init_fn(
     return init
 
 
-def make_reppo_rollout_fn(cfg: ReppoConfig, env: Environment):
-    def collect_rollout(
-        key: Key, train_state: TrainState, policy: Policy
-    ) -> tuple[Transition, TrainState]:
-        actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
-        critic_model = nnx.merge(train_state.critic.graphdef, train_state.critic.params)
-
-        offset = (
-            jnp.arange(cfg.num_envs - cfg.exploration_base_envs)[:, None]
-            * (cfg.exploration_noise_max - cfg.exploration_noise_min)
-            / (cfg.num_envs - cfg.exploration_base_envs)
-        ) + cfg.exploration_noise_min
-        offset = jnp.concatenate(
-            [
-                jnp.ones((cfg.exploration_base_envs, 1)) * cfg.exploration_noise_min,
-                offset,
-            ],
-            axis=0,
-        )
-        normalizer = Normalizer()
-
-        def step_env(carry, _) -> tuple[tuple, Transition]:
-            key, env_state, train_state, obs = carry
-
-            # Select action
-            norm_obs = normalizer.normalize(train_state.normalization_state, obs)
-            key, act_key, step_key = jax.random.split(key, 3)
-            og_pi = actor_model.actor(norm_obs)
-            pi = actor_model.actor(norm_obs, scale=offset)
-            action = pi.sample(seed=act_key)
-
-            next_obs, next_env_state, reward, done, info = env.step(
-                step_key, env_state, action
-            )
-
-            norm_next_obs = normalizer.normalize(
-                train_state.normalization_state, next_obs
-            )
-
-            # compute importance weights
-            action = jnp.clip(action, -0.999, 0.999)
-            raw_importance_weight = jnp.nan_to_num(
-                og_pi.log_prob(action).sum(-1) - pi.log_prob(action).sum(-1),
-                nan=jnp.log(cfg.lmbda_min),
-            )
-            importance_weight = jnp.clip(
-                raw_importance_weight, min=jnp.log(cfg.lmbda_min), max=jnp.log(1.0)
-            )
-
-            # compute next state embedding and value
-            next_action, log_prob = actor_model.actor(
-                norm_next_obs
-            ).sample_and_log_prob(seed=act_key)
-            next_emb, _, _, value = critic_model.forward(norm_next_obs, next_action)
-            soft_reward = (
-                reward
-                - cfg.gamma * log_prob.sum(-1).squeeze() * actor_model.temperature()
-            )
-            transition = Transition(
-                obs=obs,
-                action=action,
-                done=done,
-                truncated=next_env_state.truncated,
-                reward=reward,
-                extras={
-                    **info,
-                    # "soft_reward": soft_reward,
-                    # "next_emb": next_emb,
-                    # "value": value,
-                    # "importance_weight": importance_weight,
-                },
-            )
-            return (
-                key,
-                next_env_state,
-                train_state,
-                next_obs,
-            ), transition
-
-        # Collect rollout via lax.scan taking steps in the environment
-        rollout_state, transitions = jax.lax.scan(
-            f=step_env,
-            init=(
-                key,
-                train_state.last_env_state,
-                train_state,
-                train_state.last_obs,
-            ),
-            length=cfg.num_steps,
-        )
-        # Aggregate the transitions across all the environments to reset for the next iteration
-        _, last_env_state, train_state, last_obs = rollout_state
-
-        train_state = train_state.replace(
-            last_env_state=last_env_state,
-            last_obs=last_obs,
-            time_steps=train_state.time_steps + cfg.num_steps * cfg.num_envs,
-        )
-
-        return transitions, train_state
-
-    return collect_rollout
-
-
 def make_reppo_learner_fn(cfg: ReppoConfig):
     normalizer = Normalizer()
 
     def critic_loss_fn(
-        params: nnx.Param, train_state: SACTrainState, minibatch: Transition
+        params: nnx.Param, train_state: REPPOTrainState, minibatch: Transition
     ):
         critic_model = nnx.merge(train_state.critic.graphdef, params)
         critic_pred = critic_model.critic_cat(minibatch.obs, minibatch.action).squeeze()
@@ -409,7 +295,7 @@ def make_reppo_learner_fn(cfg: ReppoConfig):
         )
 
     def actor_loss(
-        params: nnx.Param, train_state: SACTrainState, minibatch: Transition
+        params: nnx.Param, train_state: REPPOTrainState, minibatch: Transition
     ):
         critic_target_model = nnx.merge(
             train_state.critic.graphdef,
@@ -426,7 +312,6 @@ def make_reppo_learner_fn(cfg: ReppoConfig):
             seed=minibatch.extras["action_key"]
         )
         value = critic_target_model.critic(minibatch.obs, pred_action)
-        log_prob = log_prob.sum(-1)
         entropy = -log_prob
 
         # policy KL constraint
@@ -438,8 +323,8 @@ def make_reppo_learner_fn(cfg: ReppoConfig):
 
             old_pi = actor_target_model.actor(minibatch.obs)
 
-            old_pi_act_log_prob = old_pi.log_prob(pi_action).sum(-1).mean(0)
-            pi_act_log_prob = pi_act_log_prob.sum(-1).mean(0)
+            old_pi_act_log_prob = old_pi.log_prob(pi_action).mean(0)
+            pi_act_log_prob = pi_act_log_prob.mean(0)
             kl = pi_act_log_prob - old_pi_act_log_prob
         else:
             old_pi_action, old_pi_act_log_prob = actor_target_model.actor(
@@ -447,8 +332,8 @@ def make_reppo_learner_fn(cfg: ReppoConfig):
             ).sample_and_log_prob(sample_shape=(16,), seed=minibatch.extras["kl_key"])
             old_pi_action = jnp.clip(old_pi_action, -1 + 1e-4, 1 - 1e-4)
 
-            old_pi_act_log_prob = old_pi_act_log_prob.sum(-1).mean(0)
-            pi_act_log_prob = pi.log_prob(old_pi_action).sum(-1).mean(0)
+            old_pi_act_log_prob = old_pi_act_log_prob.mean(0)
+            pi_act_log_prob = pi.log_prob(old_pi_action).mean(0)
 
             kl = old_pi_act_log_prob - pi_act_log_prob
 
@@ -504,7 +389,7 @@ def make_reppo_learner_fn(cfg: ReppoConfig):
             target_values=minibatch.extras["target_values"].mean(),
         )
 
-    def update(train_state: SACTrainState, batch: Transition):
+    def update(train_state: REPPOTrainState, batch: Transition):
         # Sample data at indices from the batch
         critic_grad_fn = jax.value_and_grad(critic_loss_fn, has_aux=True)
         output, grads = critic_grad_fn(train_state.critic.params, train_state, batch)
@@ -527,8 +412,8 @@ def make_reppo_learner_fn(cfg: ReppoConfig):
         }
 
     def run_epoch(
-        key: jax.Array, train_state: SACTrainState, batch: Transition
-    ) -> tuple[SACTrainState, dict[str, jax.Array]]:
+        key: jax.Array, train_state: REPPOTrainState, batch: Transition
+    ) -> tuple[REPPOTrainState, dict[str, jax.Array]]:
         # Shuffle data and split into mini-batches
         key, shuffle_key, act_key, kl_key = jax.random.split(key, 4)
         mini_batch_size = (
@@ -584,7 +469,7 @@ def make_reppo_learner_fn(cfg: ReppoConfig):
         )
         return target_values
 
-    def compute_extras(key: Key, train_state: SACTrainState, batch: Transition):
+    def compute_extras(key: Key, train_state: REPPOTrainState, batch: Transition):
         offset = (
             jnp.arange(cfg.num_envs - cfg.exploration_base_envs)[:, None]
             * (cfg.exploration_noise_max - cfg.exploration_noise_min)
@@ -639,8 +524,8 @@ def make_reppo_learner_fn(cfg: ReppoConfig):
         return extras
 
     def learner_fn(
-        key: Key, train_state: SACTrainState, batch: Transition
-    ) -> tuple[SACTrainState, dict[str, jax.Array]]:
+        key: Key, train_state: REPPOTrainState, batch: Transition
+    ) -> tuple[REPPOTrainState, dict[str, jax.Array]]:
         if cfg.normalize_env:
             new_norm_state = normalizer.update(
                 train_state.normalization_state, batch.obs

@@ -17,6 +17,7 @@ from src.env_utils.jax_wrappers import (
     MjxGymnaxWrapper,
 )
 from gymnax.environments.environment import Environment
+from flax import struct
 
 
 def describe(values: jnp.ndarray, axis: tuple | int = 0) -> dict[str, jnp.ndarray]:
@@ -74,7 +75,7 @@ def hl_gauss(inp, num_bins, vmin, vmax, epsilon=0.0):
     return (1 - epsilon) * target_probs + epsilon * uniform
 
 
-@flax.struct.dataclass
+@struct.dataclass
 class MultiSampleLogProb:
     policy_action: jax.Array
     policy_action_log_prob: jax.Array
@@ -206,9 +207,11 @@ def make_log_callback():
     return log_callback
 
 
-def init_env_state(key: jax.Array, cfg: DictConfig, env: Environment):
+def init_env_state(
+    key: jax.Array, env: Environment, num_envs: int, max_episode_steps: int
+) -> tuple[jax.Array, gymnax.EnvState]:
     key, env_key = jax.random.split(key)
-    env_key = jax.random.split(env_key, cfg.num_envs)
+    env_key = jax.random.split(env_key, num_envs)
     obs, env_state = env.reset(env_key)
     if isinstance(env_state.unwrapped(), State):
         _env_state = env_state.unwrapped()
@@ -217,7 +220,7 @@ def init_env_state(key: jax.Array, cfg: DictConfig, env: Environment):
             randomize_steps_key,
             _env_state.info["steps"].shape,
             0,
-            cfg.max_episode_steps,
+            max_episode_steps,
         ).astype(jnp.float32)
         env_state.set_env_state(_env_state)
     return obs, env_state

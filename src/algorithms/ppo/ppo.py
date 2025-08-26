@@ -6,14 +6,16 @@ import hydra
 import jax
 import optax
 from flax import nnx, struct
-from gymnax.environments.environment import Environment, EnvParams, EnvState
+from gymnax.environments.environment import Environment, EnvParams
 from jax import numpy as jnp
-from jax.random import PRNGKey
 from omegaconf import DictConfig, OmegaConf
 import wandb
 
 from src.algorithms import utils
 from src.algorithms.common import (
+    InitFn,
+    Key,
+    LearnerFn,
     Policy,
     TrainState,
     Transition,
@@ -47,19 +49,15 @@ class PPOConfig(struct.PyTreeNode):
 
 
 class PPOTrainState(TrainState):
-    iteration: int
-    time_steps: int
-    last_env_state: EnvState
-    last_obs: jax.Array
     normalization_state: NormalizationState | None = None
 
 
 def make_ppo_init_fn(
     cfg: PPOConfig,
     env: Environment,
-    env_params: EnvParams = None,
-) -> PPOTrainState:
-    def init(key: jax.random.PRNGKey) -> PPOTrainState:
+    env_params: EnvParams | None = None,
+) -> InitFn:
+    def init(key: Key) -> PPOTrainState:
         # Number of calls to train_step
         num_train_steps = cfg.total_time_steps // (cfg.num_steps * cfg.num_envs)
         # Number of calls to train_iter, add 1 if not divisible by eval_interval
@@ -97,7 +95,12 @@ def make_ppo_init_fn(
 
         # Reset and fully initialize the environment
         key, env_key = jax.random.split(key)
-        obs, env_state = utils.init_env_state(env_key, cfg, env)
+        obs, env_state = utils.init_env_state(
+            env_key,
+            env=env,
+            num_envs=cfg.num_envs,
+            max_episode_steps=cfg.max_episode_steps,
+        )
 
         if cfg.normalize_env:
             normalizer = Normalizer()
@@ -120,8 +123,7 @@ def make_ppo_init_fn(
     return init
 
 
-def make_ppo_learner_fn(cfg: PPOConfig):
-
+def make_ppo_learner_fn(cfg: PPOConfig) -> LearnerFn:
     normalizer = Normalizer()
 
     def loss_fn(params: nnx.Param, train_state: TrainState, minibatch: Transition):
@@ -191,7 +193,7 @@ def make_ppo_learner_fn(cfg: PPOConfig):
         return train_state, metrics
 
     def run_epoch(
-        key: PRNGKey, train_state: PPOTrainState, batch: Transition
+        key: Key, train_state: PPOTrainState, batch: Transition
     ) -> tuple[PPOTrainState, dict[str, jax.Array]]:
         # Shuffle data and split into mini-batches
         key, shuffle_key = jax.random.split(key)
@@ -213,21 +215,18 @@ def make_ppo_learner_fn(cfg: PPOConfig):
         return train_state, metrics
 
     def learner_fn(
-        key: PRNGKey, train_state: PPOTrainState, batch: Transition
+        key: Key, train_state: PPOTrainState, batch: Transition
     ) -> tuple[PPOTrainState, dict[str, jax.Array]]:
         # Compute advantages and target values
         model = nnx.merge(train_state.graphdef, train_state.params)
         last_obs = train_state.last_obs
         if cfg.normalize_env:
-            norm_state = normalizer.update(
-                train_state.normalization_state,
-                batch.obs.reshape(-1, *last_obs.shape[1:]),
-            )
+            norm_state = normalizer.update(train_state.normalization_state, batch.obs)
             train_state = train_state.replace(normalization_state=norm_state)
             batch = batch.replace(
-                obs=normalizer.normalize(norm_state, batch.obs)
+                obs=normalizer.normalize(train_state.normalization_state, batch.obs)
             )
-            last_obs = normalizer.normalize(norm_state, last_obs)
+            last_obs = normalizer.normalize(train_state.normalization_state, last_obs)
 
         last_value = model.critic(last_obs)
         batch.extras["value"] = model.critic(batch.obs)
@@ -279,12 +278,12 @@ def make_ppo_learner_fn(cfg: PPOConfig):
     return learner_fn
 
 
-def ppo_policy_fn(train_state: PPOTrainState, eval: bool) -> Policy:
+def ppo_policy_fn(train_state: PPOTrainState, eval_mode: bool) -> Policy:
     normalizer = Normalizer()
 
     def policy(
-        key: PRNGKey, obs: jax.Array, state: struct.PyTreeNode = None
-    ) -> tuple[jax.Array, jax.Array]:
+        key: Key, obs: jax.Array, state: struct.PyTreeNode | None = None
+    ) -> tuple[jax.Array, dict[str, jax.Array]]:
         if train_state.normalization_state is not None:
             obs = normalizer.normalize(train_state.normalization_state, obs)
         model = nnx.merge(train_state.graphdef, train_state.params)
@@ -305,7 +304,7 @@ def main(cfg: DictConfig):
         project=cfg.logging.project,
         entity=cfg.logging.entity,
         tags=[cfg.name, cfg.env.name, cfg.env.type, *cfg.tags],
-        config=OmegaConf.to_container(cfg),
+        config=dict(cfg),
         name=f"ppo-{cfg.name}-{cfg.env.name.lower()}",
         save_code=True,
     )

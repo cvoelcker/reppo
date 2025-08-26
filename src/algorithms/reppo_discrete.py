@@ -25,7 +25,7 @@ from src.env_utils.jax_wrappers import (
     NormalizeVec,
 )
 from src.algorithms import utils
-from src.networks.jax_models import (
+from src.algorithms.reppo.networks import (
     CategoricalCriticNetwork,
     CriticNetwork,
     SACActorNetworks,

@@ -13,6 +13,7 @@ from src.algorithms import utils
 
 Config = TypeVar("Config", bound=struct.PyTreeNode)
 Key = jax.Array
+Metrics = dict[str, jax.Array]
 
 
 @struct.dataclass
@@ -38,24 +39,85 @@ class Policy(typing.Protocol):
         key: Key,
         obs: PyTreeNode,
         state: Optional[PyTreeNode] = None,
-    ) -> tuple[PyTreeNode, PyTreeNode]:
+    ) -> tuple[jax.Array, Optional[PyTreeNode]]:
+        pass
+
+
+class InitFn(typing.Protocol):
+    def __call__(
+        self,
+        key: Key,
+    ) -> TrainState:
+        pass
+
+
+class LearnerFn(typing.Protocol):
+    def __call__(
+        self,
+        key: Key,
+        train_state: TrainState,
+        batch: Transition,
+    ) -> tuple[TrainState, Metrics]:
+        pass
+
+
+class RolloutFn(typing.Protocol):
+    def __call__(
+        self,
+        key: Key,
+        train_state: TrainState,
+        policy: Policy,
+    ) -> tuple[Transition, TrainState]:
+        pass
+
+
+class EvalFn(typing.Protocol):
+    def __call__(
+        self,
+        key: Key,
+        policy: Policy,
+    ) -> dict[str, jax.Array]:
+        pass
+
+
+class PolicyFn(typing.Protocol):
+    def __call__(
+        self,
+        train_state: TrainState,
+        eval_mode: bool = False,
+    ) -> Policy:
+        pass
+
+
+class LogCallback(typing.Protocol):
+    def __call__(
+        self,
+        train_state: TrainState,
+        metrics: dict[str, jax.Array],
+    ) -> None:
+        pass
+
+
+class TrainFn(typing.Protocol):
+    def __call__(
+        self,
+        key: Key,
+    ) -> tuple[TrainState, dict[str, jax.Array]]:
         pass
 
 
 def make_train_fn(
     cfg: Config,
     env: Environment,
-    init_fn: Callable[[Key], TrainState],
-    policy_fn: Callable[[TrainState, bool], Policy],
-    learner_fn: Callable[
-        [Key, TrainState, Transition], tuple[TrainState, dict[str, jax.Array]]
-    ],
-    eval_fn: Callable[[Key, Policy], dict[str, jax.Array]] | None = None,
-    rollout_fn: Callable[[Key, TrainState], tuple[Transition, TrainState]] | None = None,
-    log_callback: Callable[[TrainState, dict[str, jax.Array]], None] | None = None,
+    init_fn: InitFn,
+    policy_fn: PolicyFn,
+    learner_fn: LearnerFn,
+    eval_fn: EvalFn | None = None,
+    rollout_fn: RolloutFn | None = None,
+    log_callback: LogCallback | None = None,
     env_params: EnvParams | None = None,
     num_seeds: int = 1,
-):
+) -> TrainFn:
     # Initialize the environment and wrap it to admit vectorized behavior.
     env_params = env_params or env.default_params
     eval_interval = int(
@@ -69,7 +131,7 @@ def make_train_fn(
         rollout_fn = make_rollout_fn(cfg, env)
 
     def train_step(
-        state: TrainState, key: PRNGKey
+        state: TrainState, key: Key
     ) -> tuple[TrainState, dict[str, jax.Array]]:
         key, rollout_key, learn_key = jax.random.split(key, 3)
         # Collect trajectories from `state`
@@ -104,7 +166,7 @@ def make_train_fn(
         return train_state, metrics
 
     def train_eval_loop_body(
-        train_state: TrainState, key: PRNGKey
+        train_state: TrainState, key: Key
     ) -> tuple[TrainState, dict]:
         # Map execution of the train+eval step across num_seeds (will be looped using jax.lax.scan)
         key, subkey = jax.random.split(key)
@@ -131,18 +193,14 @@ def make_train_fn(
     return train_fn
 
 
-def make_eval_fn(
-    env: Environment, max_episode_steps: int
-) -> Callable[[jax.random.PRNGKey, Policy], dict[str, float]]:
-    def evaluation_fn(key: jax.random.PRNGKey, policy: Policy):
+def make_eval_fn(env: Environment, max_episode_steps: int) -> EvalFn:
+    def evaluation_fn(key: Key, policy: Policy):
         def step_env(carry, _):
             key, env_state, obs = carry
             key, act_key, env_key = jax.random.split(key, 3)
             action, _ = policy(act_key, obs)
             env_key = jax.random.split(env_key, env.num_envs)
-            obs, env_state, reward, done, info = env.step(
-                env_key, env_state, action.clip(-1.0 + 1e-4, 1.0 - 1e-4)
-            )
+            obs, env_state, reward, done, info = env.step(env_key, env_state, action)
             return (key, env_state, obs), info
 
         key, init_key = jax.random.split(key)
@@ -174,9 +232,9 @@ def make_eval_fn(
     return evaluation_fn
 
 
-def make_rollout_fn(cfg: Config, env: Environment):
+def make_rollout_fn(cfg: Config, env: Environment) -> RolloutFn:
     def collect_rollout(
-        key: PRNGKey, train_state: TrainState, policy: Policy
+        key: Key, train_state: TrainState, policy: Policy
     ) -> tuple[Transition, TrainState]:
         # Take a step in the environment
         def step_env(carry, _) -> tuple[tuple, Transition]:
@@ -219,7 +277,7 @@ def make_rollout_fn(cfg: Config, env: Environment):
         )
         # Aggregate the transitions across all the environments to reset for the next iteration
         _, last_env_state, train_state, last_obs = rollout_state
-        
+
         train_state = train_state.replace(
             last_env_state=last_env_state,
             last_obs=last_obs,
