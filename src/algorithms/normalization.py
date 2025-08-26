@@ -14,9 +14,12 @@ class NormalizationState(struct.PyTreeNode):
 class Normalizer:
     @functools.partial(jax.jit, static_argnums=0)
     def init(self, tree: struct.PyTreeNode) -> NormalizationState:
+        """
+        Initialize the normalization state. Pytree should be a single instance without batch dimensions.
+        """
         return NormalizationState(
-            mean=jax.tree.map(lambda x: jnp.zeros(x.shape[1:], dtype=x.dtype), tree),
-            var=jax.tree.map(lambda x: jnp.ones(x.shape[1:], dtype=x.dtype), tree),
+            mean=jax.tree.map(lambda x: jnp.zeros_like(x), tree),
+            var=jax.tree.map(lambda x: jnp.ones_like(x), tree),
             count=jax.tree.map(lambda x: jnp.array(0, dtype=jnp.int32), tree),
         )
 
@@ -37,6 +40,7 @@ class Normalizer:
     def update(
         self, state: NormalizationState, tree: struct.PyTreeNode
     ) -> NormalizationState:
+        tree = jax.tree.map(lambda x, m: x.reshape(-1, *m.shape), tree, state.mean)
         stats = jax.tree.map(
             lambda m, v, c, x: self._compute_stats(m, v, c, x),
             state.mean,

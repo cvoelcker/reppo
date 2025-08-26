@@ -101,8 +101,7 @@ def make_ppo_init_fn(
 
         if cfg.normalize_env:
             normalizer = Normalizer()
-            norm_state = normalizer.init(obs)
-            obs = normalizer.normalize(norm_state, obs)
+            norm_state = normalizer.init(jax.tree.map(lambda x: x[0], obs))
         else:
             norm_state = None
 
@@ -280,7 +279,7 @@ def make_ppo_learner_fn(cfg: PPOConfig):
     return learner_fn
 
 
-def ppo_policy_fn(train_state: PPOTrainState) -> Policy:
+def ppo_policy_fn(train_state: PPOTrainState, eval: bool) -> Policy:
     normalizer = Normalizer()
 
     def policy(

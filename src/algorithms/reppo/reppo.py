@@ -14,7 +14,14 @@ from jax.random import PRNGKey
 from omegaconf import DictConfig, OmegaConf
 
 import wandb
-from src.algorithms.common import Policy, TrainState, Transition, make_train_fn
+from src.algorithms.common import (
+    Config,
+    Key,
+    Policy,
+    TrainState,
+    Transition,
+    make_train_fn,
+)
 from src.algorithms.normalization import Normalizer
 from src.algorithms import utils
 from src.env_utils.jax_wrappers import NormalizeVec
@@ -84,21 +91,40 @@ class SACTrainState(TrainState):
     normalization_state: PyTreeNode | None = None
 
 
-def make_reppo_policy(
-    train_state: SACTrainState,
-) -> Policy:
-    normalizer = Normalizer()
-    actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
+def make_reppo_policy_fn(cfg: DictConfig) -> Callable[[SACTrainState, bool], Policy]:
+    offset = (
+        jnp.arange(cfg.num_envs - cfg.exploration_base_envs)[:, None]
+        * (cfg.exploration_noise_max - cfg.exploration_noise_min)
+        / (cfg.num_envs - cfg.exploration_base_envs)
+    ) + cfg.exploration_noise_min
 
-    def policy(
-        key: PRNGKey, obs: jax.Array, state: struct.PyTreeNode = None
-    ) -> tuple[jax.Array, dict]:
-        if train_state.normalization_state is not None:
-            obs = normalizer.normalize(train_state.normalization_state, obs)
-        action: jax.Array = actor_model.det_action(obs)
-        return action, {}
+    offset = jnp.concatenate(
+        [
+            jnp.ones((cfg.exploration_base_envs, 1)) * cfg.exploration_noise_min,
+            offset,
+        ],
+        axis=0,
+    )
 
-    return policy
+    def policy_fn(train_state: SACTrainState, eval: bool) -> Policy:
+        normalizer = Normalizer()
+        actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
+
+        def policy(key: Key, obs: jax.Array, **kwargs) -> tuple[jax.Array, dict]:
+            if train_state.normalization_state is not None:
+                obs = normalizer.normalize(train_state.normalization_state, obs)
+
+            if eval:
+                action: jax.Array = actor_model.det_action(obs)
+            else:
+                pi = actor_model.actor(obs, scale=offset)
+                action = pi.sample(seed=key)
+                action = jnp.clip(action, -0.999, 0.999)
+            return action, {}
+
+        return policy
+
+    return policy_fn
 
 
 def make_reppo_init_fn(
@@ -201,7 +227,9 @@ def make_reppo_init_fn(
 
         if cfg.normalize_env:
             normalizer = Normalizer()
-            norm_state = normalizer.init(obs)
+            norm_state = normalizer.init(jax.tree.map(lambda x: x[0], obs))
+            norm_state = normalizer.update(norm_state, obs)
+            # obs = normalizer.normalize(norm_state, obs)
         else:
             norm_state = None
 
@@ -220,6 +248,110 @@ def make_reppo_init_fn(
         )
 
     return init
+
+
+def make_reppo_rollout_fn(cfg: ReppoConfig, env: Environment):
+    def collect_rollout(
+        key: Key, train_state: TrainState, policy: Policy
+    ) -> tuple[Transition, TrainState]:
+        actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
+        critic_model = nnx.merge(train_state.critic.graphdef, train_state.critic.params)
+
+        offset = (
+            jnp.arange(cfg.num_envs - cfg.exploration_base_envs)[:, None]
+            * (cfg.exploration_noise_max - cfg.exploration_noise_min)
+            / (cfg.num_envs - cfg.exploration_base_envs)
+        ) + cfg.exploration_noise_min
+        offset = jnp.concatenate(
+            [
+                jnp.ones((cfg.exploration_base_envs, 1)) * cfg.exploration_noise_min,
+                offset,
+            ],
+            axis=0,
+        )
+        normalizer = Normalizer()
+
+        def step_env(carry, _) -> tuple[tuple, Transition]:
+            key, env_state, train_state, obs = carry
+
+            # Select action
+            norm_obs = normalizer.normalize(train_state.normalization_state, obs)
+            key, act_key, step_key = jax.random.split(key, 3)
+            og_pi = actor_model.actor(norm_obs)
+            pi = actor_model.actor(norm_obs, scale=offset)
+            action = pi.sample(seed=act_key)
+
+            next_obs, next_env_state, reward, done, info = env.step(
+                step_key, env_state, action
+            )
+
+            norm_next_obs = normalizer.normalize(
+                train_state.normalization_state, next_obs
+            )
+
+            # compute importance weights
+            action = jnp.clip(action, -0.999, 0.999)
+            raw_importance_weight = jnp.nan_to_num(
+                og_pi.log_prob(action).sum(-1) - pi.log_prob(action).sum(-1),
+                nan=jnp.log(cfg.lmbda_min),
+            )
+            importance_weight = jnp.clip(
+                raw_importance_weight, min=jnp.log(cfg.lmbda_min), max=jnp.log(1.0)
+            )
+
+            # compute next state embedding and value
+            next_action, log_prob = actor_model.actor(
+                norm_next_obs
+            ).sample_and_log_prob(seed=act_key)
+            next_emb, _, _, value = critic_model.forward(norm_next_obs, next_action)
+            soft_reward = (
+                reward
+                - cfg.gamma * log_prob.sum(-1).squeeze() * actor_model.temperature()
+            )
+            transition = Transition(
+                obs=obs,
+                action=action,
+                done=done,
+                truncated=next_env_state.truncated,
+                reward=reward,
+                extras={
+                    **info,
+                    # "soft_reward": soft_reward,
+                    # "next_emb": next_emb,
+                    # "value": value,
+                    # "importance_weight": importance_weight,
+                },
+            )
+            return (
+                key,
+                next_env_state,
+                train_state,
+                next_obs,
+            ), transition
+
+        # Collect rollout via lax.scan taking steps in the environment
+        rollout_state, transitions = jax.lax.scan(
+            f=step_env,
+            init=(
+                key,
+                train_state.last_env_state,
+                train_state,
+                train_state.last_obs,
+            ),
+            length=cfg.num_steps,
+        )
+        # Aggregate the transitions across all the environments to reset for the next iteration
+        _, last_env_state, train_state, last_obs = rollout_state
+
+        train_state = train_state.replace(
+            last_env_state=last_env_state,
+            last_obs=last_obs,
+            time_steps=train_state.time_steps + cfg.num_steps * cfg.num_envs,
+        )
+
+        return transitions, train_state
+
+    return collect_rollout
 
 
 def make_reppo_learner_fn(cfg: ReppoConfig):
@@ -395,7 +527,7 @@ def make_reppo_learner_fn(cfg: ReppoConfig):
         }
 
     def run_epoch(
-        key: PRNGKey, train_state: SACTrainState, batch: Transition
+        key: jax.Array, train_state: SACTrainState, batch: Transition
     ) -> tuple[SACTrainState, dict[str, jax.Array]]:
         # Shuffle data and split into mini-batches
         key, shuffle_key, act_key, kl_key = jax.random.split(key, 4)
@@ -419,19 +551,62 @@ def make_reppo_learner_fn(cfg: ReppoConfig):
         metrics = jax.tree.map(lambda x: x.mean(0), metrics)
         return train_state, metrics
 
-    def compute_extras(key, train_state, batch):
-        last_obs = train_state.last_obs
-        actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
-        critic_model = nnx.merge(train_state.critic.graphdef, train_state.critic.params)
-        if cfg.normalize_env:
-            batch = batch.replace(
-                obs=normalizer.normalize(train_state.normalization_state, batch.obs)
+    def nstep_lambda(batch: Transition):
+        def loop(carry: tuple[jax.Array, ...], transition: Transition):
+            lambda_return, truncated, importance_weight = carry
+
+            # combine importance_weights with TD lambda
+            done = transition.done
+            reward = transition.extras["soft_reward"]
+            value = transition.extras["value"]
+            lambda_sum = (
+                jnp.exp(importance_weight) * cfg.lmbda * lambda_return
+                + (1 - jnp.exp(importance_weight) * cfg.lmbda) * value
             )
+            delta = cfg.gamma * jnp.where(truncated, value, (1.0 - done) * lambda_sum)
+            lambda_return = reward + delta
+            truncated = transition.truncated
+            return (
+                lambda_return,
+                truncated,
+                transition.extras["importance_weight"],
+            ), lambda_return
+
+        _, target_values = jax.lax.scan(
+            f=loop,
+            init=(
+                batch.extras["value"][-1],
+                jnp.ones_like(batch.truncated[0]),
+                jnp.zeros_like(batch.extras["importance_weight"][0]),
+            ),
+            xs=batch,
+            reverse=True,
+        )
+        return target_values
+
+    def compute_extras(key: Key, train_state: SACTrainState, batch: Transition):
+        offset = (
+            jnp.arange(cfg.num_envs - cfg.exploration_base_envs)[:, None]
+            * (cfg.exploration_noise_max - cfg.exploration_noise_min)
+            / (cfg.num_envs - cfg.exploration_base_envs)
+        ) + cfg.exploration_noise_min
+        offset = jnp.concatenate(
+            [
+                jnp.ones((cfg.exploration_base_envs, 1)) * cfg.exploration_noise_min,
+                offset,
+            ],
+            axis=0,
+        )
+
+        last_obs = train_state.last_obs
+        if cfg.normalize_env:
             last_obs = normalizer.normalize(train_state.normalization_state, last_obs)
 
+        actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
+        critic_model = nnx.merge(train_state.critic.graphdef, train_state.critic.params)
         emb, _, _, value = critic_model.forward(batch.obs, batch.action)
         og_pi = actor_model.actor(batch.obs)
-        pi = actor_model.actor(batch.obs)
+        pi = actor_model.actor(batch.obs, scale=offset)
         key, act_key = jax.random.split(key)
 
         last_action, last_log_prob = actor_model.actor(last_obs).sample_and_log_prob(
@@ -455,64 +630,32 @@ def make_reppo_learner_fn(cfg: ReppoConfig):
             raw_importance_weight, min=jnp.log(cfg.lmbda_min), max=jnp.log(1.0)
         )
 
-        extras = {}
-        extras["soft_reward"] = soft_reward * cfg.reward_scale
-        extras["value"] = jnp.concatenate([value[1:], last_value[None]], axis=0)
-        extras["next_emb"] = jnp.concatenate([emb[1:], last_emb[None]], axis=0)
-        extras["importance_weight"] = importance_weight
-
-        # compute next state embedding and value
-        def compute_nstep_lambda(carry, data):
-            lambda_return, truncated, importance_weight = carry
-            # combine importance_weights with TD lambda
-            transition, extras = data
-            done = transition.done
-            reward = extras["soft_reward"]
-            value = extras["value"]
-            lambda_sum = (
-                jnp.exp(importance_weight) * cfg.lmbda * lambda_return
-                + (1 - jnp.exp(importance_weight) * cfg.lmbda) * value
-            )
-            delta = cfg.gamma * jnp.where(truncated, value, (1.0 - done) * lambda_sum)
-            lambda_return = reward + delta
-            truncated = transition.truncated
-            return (
-                lambda_return,
-                truncated,
-                extras["importance_weight"],
-            ), lambda_return
-
-        _, target_values = jax.lax.scan(
-            compute_nstep_lambda,
-            (
-                last_value,
-                jnp.ones_like(batch.truncated[0]),
-                jnp.zeros_like(extras["importance_weight"][0]),
-            ),
-            (batch, extras),
-            reverse=True,
-        )
-
-        extras["target_values"] = target_values
+        extras = {
+            "soft_reward": soft_reward * cfg.reward_scale,
+            "value": jnp.concatenate([value[1:], last_value[None]], axis=0),
+            "next_emb": jnp.concatenate([emb[1:], last_emb[None]], axis=0),
+            "importance_weight": importance_weight,
+        }
         return extras
 
     def learner_fn(
-        key: PRNGKey, train_state: SACTrainState, batch: Transition
+        key: Key, train_state: SACTrainState, batch: Transition
     ) -> tuple[SACTrainState, dict[str, jax.Array]]:
+        if cfg.normalize_env:
+            new_norm_state = normalizer.update(
+                train_state.normalization_state, batch.obs
+            )
+            batch = batch.replace(
+                obs=normalizer.normalize(train_state.normalization_state, batch.obs)
+            )
+            train_state = train_state.replace(normalization_state=new_norm_state)
+
         # compute n-step lambda estimates
         key, act_key = jax.random.split(key)
-        extras = compute_extras(act_key, train_state, batch)
+        extras = compute_extras(key=act_key, train_state=train_state, batch=batch)
         batch.extras.update(extras)
 
-        if cfg.normalize_env:
-            norm_state = normalizer.update(
-                train_state.normalization_state,
-                batch.obs.reshape(-1, *train_state.last_obs.shape[1:]),
-            )
-            train_state = train_state.replace(normalization_state=norm_state)
-            batch = batch.replace(
-                obs=normalizer.normalize(norm_state, batch.obs),
-            )
+        batch.extras["target_values"] = nstep_lambda(batch=batch)
 
         # Reshape data to (num_steps * num_envs, ...)
 
@@ -533,7 +676,6 @@ def make_reppo_learner_fn(cfg: ReppoConfig):
         )
         # Get metrics from the last epoch
         update_metrics = jax.tree.map(lambda x: x[-1], update_metrics)
-
         return train_state, update_metrics
 
     return learner_fn
@@ -556,7 +698,6 @@ def main(cfg: DictConfig):
 
     # Set up the experimental environment
     env, env_params = utils.make_env(cfg)
-    env = NormalizeVec(env)
     config = ReppoConfig(**cfg.hyperparameters)
     config = config.replace(
         action_size_target=(
@@ -570,7 +711,8 @@ def main(cfg: DictConfig):
         env_params=env_params,
         init_fn=make_reppo_init_fn(config, env, env_params),
         learner_fn=make_reppo_learner_fn(config),
-        policy_fn=make_reppo_policy,
+        # rollout_fn=make_reppo_rollout_fn(config, env),
+        policy_fn=make_reppo_policy_fn(config),
         log_callback=utils.make_log_callback(),
         num_seeds=cfg.num_seeds,
     )

@@ -12,6 +12,7 @@ from flax import nnx
 from src.algorithms import utils
 
 Config = TypeVar("Config", bound=struct.PyTreeNode)
+Key = jax.Array
 
 
 @struct.dataclass
@@ -34,7 +35,7 @@ class Transition(struct.PyTreeNode):
 class Policy(typing.Protocol):
     def __call__(
         self,
-        key: jax.random.PRNGKey,
+        key: Key,
         obs: PyTreeNode,
         state: Optional[PyTreeNode] = None,
     ) -> tuple[PyTreeNode, PyTreeNode]:
@@ -44,15 +45,15 @@ class Policy(typing.Protocol):
 def make_train_fn(
     cfg: Config,
     env: Environment,
-    init_fn: Callable[[PRNGKey], TrainState],
-    policy_fn: Callable[[TrainState], Policy],
+    init_fn: Callable[[Key], TrainState],
+    policy_fn: Callable[[TrainState, bool], Policy],
     learner_fn: Callable[
-        [PRNGKey, TrainState, Transition], tuple[TrainState, dict[str, jax.Array]]
+        [Key, TrainState, Transition], tuple[TrainState, dict[str, jax.Array]]
     ],
-    eval_fn: Callable[[PRNGKey, Policy], dict[str, jax.Array]] = None,
-    rollout_fn: Callable[[PRNGKey, TrainState], tuple[Transition, TrainState]] = None,
-    log_callback: Callable[[TrainState, dict[str, jax.Array]], None] = None,
-    env_params: EnvParams = None,
+    eval_fn: Callable[[Key, Policy], dict[str, jax.Array]] | None = None,
+    rollout_fn: Callable[[Key, TrainState], tuple[Transition, TrainState]] | None = None,
+    log_callback: Callable[[TrainState, dict[str, jax.Array]], None] | None = None,
+    env_params: EnvParams | None = None,
     num_seeds: int = 1,
 ):
     # Initialize the environment and wrap it to admit vectorized behavior.
@@ -72,7 +73,7 @@ def make_train_fn(
     ) -> tuple[TrainState, dict[str, jax.Array]]:
         key, rollout_key, learn_key = jax.random.split(key, 3)
         # Collect trajectories from `state`
-        policy = policy_fn(state)
+        policy = policy_fn(state, False)
         transitions, state = rollout_fn(
             key=rollout_key, train_state=state, policy=policy
         )
@@ -92,7 +93,7 @@ def make_train_fn(
             xs=jax.random.split(train_key, eval_interval),
         )
         train_metrics = jax.tree.map(lambda x: x[-1], train_metrics)
-        policy = policy_fn(train_state)
+        policy = policy_fn(train_state, True)
         eval_metrics = eval_fn(eval_key, policy)
         metrics = {
             "time_step": train_state.time_steps,
@@ -114,7 +115,7 @@ def make_train_fn(
         return train_state, metrics
 
     # Define the training loop
-    def train_fn(key: PRNGKey) -> tuple[TrainState, dict]:
+    def train_fn(key: Key) -> tuple[TrainState, dict]:
         # Initialize the policy, environment and map that across the number of random seeds
         num_train_steps = cfg.total_time_steps // (cfg.num_steps * cfg.num_envs)
         num_iterations = num_train_steps // eval_interval + int(
