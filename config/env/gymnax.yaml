@@ -1,4 +1,4 @@
 type: gymnax
-name:
+name: Pendulum-v1
 vmin: 0
 vmax: 500

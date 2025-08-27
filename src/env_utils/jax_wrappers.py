@@ -60,6 +60,7 @@ class MjxGymnaxWrapper(Environment):
         else:
             self.dict_obs_key = "state"
         self.asymmetric_observation = asymmetric_observation
+        self.episode_length = episode_length
         super().__init__()
 
     def action_space(self, params):

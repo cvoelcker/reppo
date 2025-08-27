@@ -310,7 +310,7 @@ def main(cfg: DictConfig):
     )
 
     key = jax.random.PRNGKey(cfg.seed)
-    ppo_cfg = PPOConfig(**cfg.hyperparameters)
+    ppo_cfg = PPOConfig(**cfg.hyperparameters, max_episode_steps=cfg.env.max_episode_steps)
 
     # Set up the experimental environment
     env, env_params = utils.make_env(cfg)

@@ -1,6 +1,7 @@
 
 
 import distrax
+import gymnasium
 import gymnax
 import jax
 from flax import nnx
@@ -19,7 +20,7 @@ class PPONetworks(nnx.Module):
         rngs: nnx.Rngs,
     ):
         self.discrete_action = isinstance(
-            action_space, gymnax.environments.spaces.Discrete
+            action_space, gymnax.environments.spaces.Discrete | gymnasium.spaces.Discrete
         )
         if (
             isinstance(obs_space, gymnax.environments.spaces.Dict)

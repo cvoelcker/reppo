@@ -180,6 +180,7 @@ def make_init(
     env: Environment,
     env_params: EnvParams = None,
 ) -> Callable[[jax.Array], SACTrainState]:
+    
     def init(key: jax.random.PRNGKey) -> SACTrainState:
         # Number of calls to train_step
         key, model_key = jax.random.split(key)

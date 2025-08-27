@@ -13,9 +13,8 @@ dependencies = [
     "hydra-core>=1.3.2",
     "hydra-submitit-launcher>=1.2.0",
     "jax-tqdm>=0.3.1",
-    "jax[cuda12]==0.5.2 ; sys_platform == 'linux'",
-    "jax==0.5.2 ; sys_platform == 'darwin'",
-    "mani-skill>=3.0.0b21",
+    "jax[cuda12]==0.5.0 ; sys_platform == 'linux'",
+    "jax==0.5.0 ; sys_platform == 'darwin'",
     "matplotlib>=3.10.0",
     "optax>=0.2.4",
     "optuna-integration>=4.3.0",
@@ -26,7 +25,6 @@ dependencies = [
     "tensordict>=0.8.3",
     "torch>=2.7.1",
     "tyro>=0.9.25",
-    "sapien>=3.0.0b1 ; sys_platform != 'darwin'",
     "wandb>=0.20.1",
     "torchinfo>=1.8.0",
     "debugpy>=1.8.14",
@@ -35,6 +33,8 @@ dependencies = [
     "scalene>=1.5.51",
     "torchinfo>=1.8.0",
     "debugpy>=1.8.14",
+    "jax[cuda12]==0.5.0",
+    "pufferlib[atari]>=3.0.0",
 ]
 
 [build-system]

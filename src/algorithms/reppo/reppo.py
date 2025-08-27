@@ -12,7 +12,7 @@ from gymnax.environments.environment import Environment, EnvParams
 from jax import numpy as jnp
 from jax.random import PRNGKey
 from omegaconf import DictConfig, OmegaConf
-
+from gymnax.environments.spaces import Space
 import wandb
 from src.algorithms.common import (
     Config,
@@ -129,16 +129,15 @@ def make_reppo_policy_fn(cfg: DictConfig) -> Callable[[REPPOTrainState, bool], P
 
 def make_reppo_init_fn(
     cfg: ReppoConfig,
-    env: Environment,
-    env_params: EnvParams | None = None,
+    observation_space: Space,
+    action_space: Space,
 ) -> Callable[[jax.Array], REPPOTrainState]:
-    
     def init(key: Key) -> REPPOTrainState:
         # Number of calls to train_step
         key, model_key = jax.random.split(key)
         actor_networks = SACActorNetworks(
-            obs_dim=env.observation_space(env_params).shape[0],
-            action_dim=env.action_space(env_params).shape[0],
+            obs_dim=observation_space.shape[0],
+            action_dim=action_space.shape[0],
             hidden_dim=cfg.actor_hidden_dim,
             ent_start=cfg.ent_start,
             kl_start=cfg.kl_start,
@@ -150,8 +149,8 @@ def make_reppo_init_fn(
 
         if cfg.hl_gauss:
             critic_networks: nnx.Module = CategoricalCriticNetwork(
-                obs_dim=env.observation_space(env_params).shape[0],
-                action_dim=env.action_space(env_params).shape[0],
+                obs_dim=observation_space.shape[0],
+                action_dim=action_space.shape[0],
                 hidden_dim=cfg.critic_hidden_dim,
                 num_bins=cfg.num_bins,
                 vmin=cfg.vmin,
@@ -166,8 +165,8 @@ def make_reppo_init_fn(
             )
         else:
             critic_networks: nnx.Module = CriticNetwork(
-                obs_dim=env.observation_space(env_params).shape[0],
-                action_dim=env.action_space(env_params).shape[0],
+                obs_dim=observation_space.shape[0],
+                action_dim=action_space.shape[0],
                 hidden_dim=cfg.critic_hidden_dim,
                 use_norm=cfg.use_critic_norm,
                 encoder_layers=cfg.num_critic_encoder_layers,
@@ -212,13 +211,9 @@ def make_reppo_init_fn(
             tx=critic_optimizer,
         )
 
-        key, env_key = jax.random.split(key)
-        obs, env_state = utils.init_env_state(env_key, cfg, env)
-
         if cfg.normalize_env:
             normalizer = Normalizer()
-            norm_state = normalizer.init(jax.tree.map(lambda x: x[0], obs))
-            norm_state = normalizer.update(norm_state, obs)
+            norm_state = normalizer.init(jnp.zeros(observation_space.shape))
             # obs = normalizer.normalize(norm_state, obs)
         else:
             norm_state = None
@@ -232,9 +227,9 @@ def make_reppo_init_fn(
             critic=critic_trainstate,
             iteration=0,
             time_steps=0,
-            last_env_state=env_state,
-            last_obs=obs,
             normalization_state=norm_state,
+            last_env_state=None,
+            last_obs=None,
         )
 
     return init
@@ -582,24 +577,28 @@ def main(cfg: DictConfig):
     key = jax.random.PRNGKey(cfg.seed)
 
     # Set up the experimental environment
-    env, env_params = utils.make_env(cfg)
+    env, eval_env = utils.make_env(cfg)
     config = ReppoConfig(**cfg.hyperparameters)
     config = config.replace(
         action_size_target=(
-            jnp.prod(jnp.array(env.action_space(env_params).shape))
+            jnp.prod(jnp.array(env.action_space(env.default_params).shape))
             * config.ent_target_mult
         )
     )
     train_fn = make_train_fn(
         cfg=config,
-        env=env,
-        env_params=env_params,
-        init_fn=make_reppo_init_fn(config, env, env_params),
+        env=(env, eval_env),
+        init_fn=make_reppo_init_fn(
+            config,
+            observation_space=env.observation_space(env.default_params),
+            action_space=env.action_space(env.default_params),
+        ),
         learner_fn=make_reppo_learner_fn(config),
         # rollout_fn=make_reppo_rollout_fn(config, env),
         policy_fn=make_reppo_policy_fn(config),
         log_callback=utils.make_log_callback(),
         num_seeds=cfg.num_seeds,
+        mode="loop"
     )
     start = time.perf_counter()
     _, metrics = jax.jit(train_fn)(key)

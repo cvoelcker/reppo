@@ -1,0 +1,5 @@
+type: gymnasium
+name: CartPole-v1
+vmin: 0
+vmax: 500
+max_episode_steps: 500

@@ -18,6 +18,7 @@ from src.env_utils.jax_wrappers import (
 )
 from gymnax.environments.environment import Environment
 from flax import struct
+import gymnasium as gym
 
 
 def describe(values: jnp.ndarray, axis: tuple | int = 0) -> dict[str, jnp.ndarray]:
@@ -152,13 +153,14 @@ def simplical_softmax_cross_entropy(pred, target, dim=8):
     )
 
 
-def make_env(cfg: DictConfig) -> tuple[Environment, gymnax.EnvParams | None]:
-    env_params = None
+def make_env(cfg: DictConfig) -> tuple[Environment, Environment]:
     if cfg.env.type == "brax":
         env = BraxGymnaxWrapper(
             cfg.env.name
         )  # , episode_length=cfg.env.max_episode_steps
         env = ClipAction(env)
+        env = LogWrapper(env, num_envs=cfg.hyperparameters.num_envs)
+        eval_env = env
     elif cfg.env.type == "mjx":
         env = MjxGymnaxWrapper(
             cfg.env.name,
@@ -166,24 +168,49 @@ def make_env(cfg: DictConfig) -> tuple[Environment, gymnax.EnvParams | None]:
             asymmetric_observation=cfg.env.asymmetric_observation,
         )
         env = ClipAction(env)
+        env = LogWrapper(env, num_envs=cfg.hyperparameters.num_envs)
+        eval_env = env
     elif cfg.env.type == "gymnax":
         env, env_params = gymnax.make(cfg.env.name)
         env = FlattenObsWrapper(env)
         env = BatchEnv(env)
+        env = LogWrapper(env, num_envs=cfg.hyperparameters.num_envs)
+        eval_env = env
+    elif cfg.env.type == "gymnasium":
+        def _make():
+            env = gym.make(cfg.env.name)
+            env = gym.wrappers.FlattenObservation(env)  # deal with dm_control's Dict observation space
+            env = gym.wrappers.RecordEpisodeStatistics(env)
+            #env = gym.wrappers.ClipAction(env)
+            #env = gym.wrappers.NormalizeObservation(env)
+            #env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10))
+            #env = gym.wrappers.NormalizeReward(env, gamma=gamma)
+            #env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -10, 10))
+            return env
+        env = gym.vector.SyncVectorEnv(
+            [_make for _ in range(cfg.hyperparameters.num_envs)]
+        )
+        eval_env = gym.vector.SyncVectorEnv(
+            [_make for _ in range(cfg.hyperparameters.num_envs)]
+        )
+
     else:
         raise ValueError(f"Unknown environment type: {cfg.env.type}")
 
-    env = LogWrapper(env, num_envs=cfg.hyperparameters.num_envs)
-    return env, env_params
+    return env, eval_env
 
 
-def make_log_callback():
+def make_log_callback(multiple_seeds: bool = True):
     metric_history = []
 
     def log_callback(state, metrics):
+        if multiple_seeds:
+            state = state.replace(time_steps=state.time_steps[0])
+            metrics["time_step"] = state.time_steps
+
         metrics["sys_time"] = time.perf_counter()
         if len(metric_history) > 0:
-            num_env_steps = state.time_steps[0] - metric_history[-1]["time_step"][0]
+            num_env_steps = state.time_steps - metric_history[-1]["time_step"]
             seconds = metrics["sys_time"] - metric_history[-1]["sys_time"]
             sps = num_env_steps / seconds
         else:
@@ -194,7 +221,7 @@ def make_log_callback():
         # Use pop() with a default value of None in case 'advantages' key doesn't exist
         advantages = metrics.pop("train/advantages", None)
         logging.info(
-            f"step={state.time_steps[0]} episode_return={episode_return:.3f}, sps={sps:.2f}"
+            f"step={state.time_steps} episode_return={episode_return:.3f}, sps={sps:.2f}"
         )
         log_data = {
             "eval/episode_return": episode_return,
@@ -202,13 +229,13 @@ def make_log_callback():
         }
         if advantages is not None:
             log_data["train/advantages"] = wandb.Histogram(advantages)
-        wandb.log(log_data, step=state.time_steps[0])
+        wandb.log(log_data, step=state.time_steps)
 
     return log_callback
 
 
 def init_env_state(
-    key: jax.Array, env: Environment, num_envs: int, max_episode_steps: int
+    key: jax.Array, env: Environment, num_envs: int
 ) -> tuple[jax.Array, gymnax.EnvState]:
     key, env_key = jax.random.split(key)
     env_key = jax.random.split(env_key, num_envs)
@@ -220,7 +247,7 @@ def init_env_state(
             randomize_steps_key,
             _env_state.info["steps"].shape,
             0,
-            max_episode_steps,
+            env.episode_length,
         ).astype(jnp.float32)
         env_state.set_env_state(_env_state)
     return obs, env_state
