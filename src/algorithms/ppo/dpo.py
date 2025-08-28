@@ -11,7 +11,7 @@ from omegaconf import DictConfig, OmegaConf
 import wandb
 
 from src.algorithms import utils
-from src.algorithms.common import (
+from src.common import (
     TrainState,
     Transition,
     make_train_fn,

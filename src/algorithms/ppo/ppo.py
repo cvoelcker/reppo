@@ -1,7 +1,9 @@
+import functools
 import logging
 import math
 import time
 
+import gymnasium
 import hydra
 import jax
 import optax
@@ -11,17 +13,16 @@ from jax import numpy as jnp
 from omegaconf import DictConfig, OmegaConf
 import wandb
 
-from src.algorithms import utils
-from src.algorithms.common import (
+from src.algorithms import envs, utils
+from src.common import (
     InitFn,
     Key,
     LearnerFn,
     Policy,
     TrainState,
     Transition,
-    make_train_fn,
 )
-from src.algorithms.normalization import NormalizationState, Normalizer
+from src.normalization import NormalizationState, Normalizer
 from src.algorithms.ppo.networks import PPONetworks
 
 logging.basicConfig(level=logging.INFO)
@@ -53,9 +54,7 @@ class PPOTrainState(TrainState):
 
 
 def make_ppo_init_fn(
-    cfg: PPOConfig,
-    env: Environment,
-    env_params: EnvParams | None = None,
+    cfg: PPOConfig, observation_space: gymnasium.Space, action_space: gymnasium.Space
 ) -> InitFn:
     def init(key: Key) -> PPOTrainState:
         # Number of calls to train_step
@@ -70,8 +69,8 @@ def make_ppo_init_fn(
         key, model_key = jax.random.split(key)
         # Intialize the model
         networks = PPONetworks(
-            obs_space=env.observation_space(env_params),
-            action_space=env.action_space(env_params),
+            obs_space=observation_space,
+            action_space=action_space,
             hidden_dim=cfg.hidden_dim,
             rngs=nnx.Rngs(model_key),
         )
@@ -95,16 +94,10 @@ def make_ppo_init_fn(
 
         # Reset and fully initialize the environment
         key, env_key = jax.random.split(key)
-        obs, env_state = utils.init_env_state(
-            env_key,
-            env=env,
-            num_envs=cfg.num_envs,
-            max_episode_steps=cfg.max_episode_steps,
-        )
 
         if cfg.normalize_env:
             normalizer = Normalizer()
-            norm_state = normalizer.init(jax.tree.map(lambda x: x[0], obs))
+            norm_state = normalizer.init(jnp.zeros(observation_space.shape))
         else:
             norm_state = None
 
@@ -115,8 +108,8 @@ def make_ppo_init_fn(
             graphdef=nnx.graphdef(networks),
             params=nnx.state(networks),
             tx=optimizer,
-            last_env_state=env_state,
-            last_obs=obs,
+            last_env_state=None,
+            last_obs=None,
             normalization_state=norm_state,
         )
 
@@ -275,7 +268,7 @@ def make_ppo_learner_fn(cfg: PPOConfig) -> LearnerFn:
 
         return train_state, update_metrics
 
-    return learner_fn
+    return jax.jit(learner_fn)
 
 
 def ppo_policy_fn(train_state: PPOTrainState, eval_mode: bool) -> Policy:
@@ -310,22 +303,30 @@ def main(cfg: DictConfig):
     )
 
     key = jax.random.PRNGKey(cfg.seed)
-    ppo_cfg = PPOConfig(**cfg.hyperparameters, max_episode_steps=cfg.env.max_episode_steps)
+    ppo_cfg = PPOConfig(**cfg.hyperparameters)
 
-    # Set up the experimental environment
-    env, env_params = utils.make_env(cfg)
+    if cfg.runner.type == "gymnax":
+        from src.runners.gymnax_train_fn import make_train_fn
+    elif cfg.runner.type == "gymnasium":
+        from src.runners.gymnasium_train_fn import make_train_fn
+    else:
+        raise ValueError("Unknown environment type")
+
+    env_setup = envs.make_env(cfg)
     train_fn = make_train_fn(
         cfg=ppo_cfg,
-        env=env,
-        env_params=env_params,
-        init_fn=make_ppo_init_fn(ppo_cfg, env, env_params),
+        env=(env_setup.env, env_setup.eval_env),
+        init_fn=make_ppo_init_fn(
+            cfg=ppo_cfg,
+            observation_space=env_setup.observation_space,
+            action_space=env_setup.action_space,
+        ),
         learner_fn=make_ppo_learner_fn(ppo_cfg),
         policy_fn=ppo_policy_fn,
         log_callback=utils.make_log_callback(),
-        num_seeds=cfg.num_seeds,
     )
     start = time.perf_counter()
-    _, metrics = jax.jit(train_fn)(key)
+    _, metrics = train_fn(key)
     jax.block_until_ready(metrics)
     duration = time.perf_counter() - start
     logging.info(f"Training took {duration:.2f} seconds.")

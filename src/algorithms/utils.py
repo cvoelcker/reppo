@@ -8,14 +8,7 @@ import jax.numpy as jnp
 from mujoco_playground import State
 from omegaconf import DictConfig
 import wandb
-from src.env_utils.jax_wrappers import (
-    BatchEnv,
-    BraxGymnaxWrapper,
-    ClipAction,
-    FlattenObsWrapper,
-    LogWrapper,
-    MjxGymnaxWrapper,
-)
+
 from gymnax.environments.environment import Environment
 from flax import struct
 import gymnasium as gym
@@ -153,58 +146,11 @@ def simplical_softmax_cross_entropy(pred, target, dim=8):
     )
 
 
-def make_env(cfg: DictConfig) -> tuple[Environment, Environment]:
-    if cfg.env.type == "brax":
-        env = BraxGymnaxWrapper(
-            cfg.env.name
-        )  # , episode_length=cfg.env.max_episode_steps
-        env = ClipAction(env)
-        env = LogWrapper(env, num_envs=cfg.hyperparameters.num_envs)
-        eval_env = env
-    elif cfg.env.type == "mjx":
-        env = MjxGymnaxWrapper(
-            cfg.env.name,
-            episode_length=cfg.env.max_episode_steps,
-            asymmetric_observation=cfg.env.asymmetric_observation,
-        )
-        env = ClipAction(env)
-        env = LogWrapper(env, num_envs=cfg.hyperparameters.num_envs)
-        eval_env = env
-    elif cfg.env.type == "gymnax":
-        env, env_params = gymnax.make(cfg.env.name)
-        env = FlattenObsWrapper(env)
-        env = BatchEnv(env)
-        env = LogWrapper(env, num_envs=cfg.hyperparameters.num_envs)
-        eval_env = env
-    elif cfg.env.type == "gymnasium":
-        def _make():
-            env = gym.make(cfg.env.name)
-            env = gym.wrappers.FlattenObservation(env)  # deal with dm_control's Dict observation space
-            env = gym.wrappers.RecordEpisodeStatistics(env)
-            #env = gym.wrappers.ClipAction(env)
-            #env = gym.wrappers.NormalizeObservation(env)
-            #env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10))
-            #env = gym.wrappers.NormalizeReward(env, gamma=gamma)
-            #env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -10, 10))
-            return env
-        env = gym.vector.SyncVectorEnv(
-            [_make for _ in range(cfg.hyperparameters.num_envs)]
-        )
-        eval_env = gym.vector.SyncVectorEnv(
-            [_make for _ in range(cfg.hyperparameters.num_envs)]
-        )
-
-    else:
-        raise ValueError(f"Unknown environment type: {cfg.env.type}")
-
-    return env, eval_env
-
-
-def make_log_callback(multiple_seeds: bool = True):
+def make_log_callback():
     metric_history = []
 
     def log_callback(state, metrics):
-        if multiple_seeds:
+        if state.time_steps.ndim > 0:
             state = state.replace(time_steps=state.time_steps[0])
             metrics["time_step"] = state.time_steps
 

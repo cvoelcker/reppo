@@ -12,13 +12,13 @@ from omegaconf import DictConfig, OmegaConf
 import wandb
 
 from src.algorithms import utils
-from src.algorithms.common import (
+from src.common import (
     Policy,
     TrainState,
     Transition,
     make_train_fn,
 )
-from src.algorithms.normalization import Normalizer
+from src.normalization import Normalizer
 from src.algorithms.ppo.ppo import (
     PPOConfig,
     PPOTrainState,

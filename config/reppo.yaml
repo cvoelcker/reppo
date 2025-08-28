@@ -1,6 +1,7 @@
 defaults:
   - env: brax
   - logging: wandb_offline
+  - runner: gymnax
   - _self_
 
 hyperparameters:

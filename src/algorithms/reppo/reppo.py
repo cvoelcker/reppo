@@ -8,23 +8,18 @@ import jax
 import optax
 from flax import nnx, struct
 from flax.struct import PyTreeNode
-from gymnax.environments.environment import Environment, EnvParams
 from jax import numpy as jnp
-from jax.random import PRNGKey
 from omegaconf import DictConfig, OmegaConf
 from gymnax.environments.spaces import Space
 import wandb
-from src.algorithms.common import (
-    Config,
+from src.common import (
     Key,
     Policy,
     TrainState,
     Transition,
-    make_train_fn,
 )
-from src.algorithms.normalization import Normalizer
-from src.algorithms import utils
-from src.env_utils.jax_wrappers import NormalizeVec
+from src.normalization import Normalizer
+from src.algorithms import envs, utils
 from src.algorithms.reppo.networks import (
     CategoricalCriticNetwork,
     CriticNetwork,
@@ -91,7 +86,7 @@ class REPPOTrainState(TrainState):
     normalization_state: PyTreeNode | None = None
 
 
-def make_reppo_policy_fn(cfg: DictConfig) -> Callable[[REPPOTrainState, bool], Policy]:
+def make_reppo_policy_fn(cfg: ReppoConfig) -> Callable[[REPPOTrainState, bool], Policy]:
     offset = (
         jnp.arange(cfg.num_envs - cfg.exploration_base_envs)[:, None]
         * (cfg.exploration_noise_max - cfg.exploration_noise_min)
@@ -499,13 +494,13 @@ def make_reppo_learner_fn(cfg: ReppoConfig):
 
         soft_reward = (
             batch.reward
-            - cfg.gamma * next_log_prob.squeeze() * actor_model.temperature()
+            - cfg.gamma * next_log_prob * actor_model.temperature()
         )
 
         raw_importance_weight = jnp.nan_to_num(
             og_pi.log_prob(batch.action) - pi.log_prob(batch.action),
             nan=jnp.log(cfg.lmbda_min),
-        ).squeeze()
+        )
         importance_weight = jnp.clip(
             raw_importance_weight, min=jnp.log(cfg.lmbda_min), max=jnp.log(1.0)
         )
@@ -577,31 +572,36 @@ def main(cfg: DictConfig):
     key = jax.random.PRNGKey(cfg.seed)
 
     # Set up the experimental environment
-    env, eval_env = utils.make_env(cfg)
+    env_setup = envs.make_env(cfg)
     config = ReppoConfig(**cfg.hyperparameters)
     config = config.replace(
         action_size_target=(
-            jnp.prod(jnp.array(env.action_space(env.default_params).shape))
+            jnp.prod(jnp.array(env_setup.action_space.shape))
             * config.ent_target_mult
         )
     )
+    if cfg.runner.type == "gymnax":
+        from src.runners.gymnax_train_fn import make_train_fn
+    elif cfg.runner.type == "gymnasium":
+        from src.runners.gymnasium_train_fn import make_train_fn
+    else:
+        raise ValueError("Unknown environment type")
+
+    env_setup = envs.make_env(cfg)
     train_fn = make_train_fn(
         cfg=config,
-        env=(env, eval_env),
+        env=(env_setup.env, env_setup.eval_env),
         init_fn=make_reppo_init_fn(
-            config,
-            observation_space=env.observation_space(env.default_params),
-            action_space=env.action_space(env.default_params),
+            cfg=config,
+            observation_space=env_setup.observation_space,
+            action_space=env_setup.action_space,
         ),
         learner_fn=make_reppo_learner_fn(config),
-        # rollout_fn=make_reppo_rollout_fn(config, env),
         policy_fn=make_reppo_policy_fn(config),
         log_callback=utils.make_log_callback(),
-        num_seeds=cfg.num_seeds,
-        mode="loop"
     )
     start = time.perf_counter()
-    _, metrics = jax.jit(train_fn)(key)
+    _, metrics = train_fn(key)
     jax.block_until_ready(metrics)
     duration = time.perf_counter() - start
     logging.info(f"Training took {duration:.2f} seconds.")

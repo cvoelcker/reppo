@@ -20,8 +20,8 @@ class PPONetworks(nnx.Module):
         rngs: nnx.Rngs,
     ):
         self.discrete_action = isinstance(
-            action_space, gymnax.environments.spaces.Discrete | gymnasium.spaces.Discrete
-        )
+            action_space, gymnax.environments.spaces.Discrete | gymnasium.spaces.Discrete)
+        print("Discrete action space:", self.discrete_action)
         if (
             isinstance(obs_space, gymnax.environments.spaces.Dict)
             and "privileged_state" in obs_space.spaces

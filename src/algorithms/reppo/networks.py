@@ -81,7 +81,7 @@ class FCNN(nnx.Module):
         if layers == 1:
             hidden_dim = out_features
         self.input_layer = normed_activation_layer(
-            rngs, 
+            rngs,
             in_features,
             hidden_dim,
             use_norm=use_norm,
@@ -236,7 +236,7 @@ class CategoricalCriticNetwork(nnx.Module):
         if project_discrete_action:
             self.action_embedding = nnx.Embed(
                 num_embeddings=action_dim,
-                features=hidden_dim//2,
+                features=hidden_dim // 2,
             )
             action_dim = hidden_dim // 2
         else:
@@ -252,7 +252,7 @@ class CategoricalCriticNetwork(nnx.Module):
             use_output_norm=False,
             layers=encoder_layers,
             hidden_skip=use_skip,
-            output_skip= use_skip,
+            output_skip=use_skip,
             rngs=rngs,
         )
         self.critic_module = FCNN(
@@ -364,6 +364,7 @@ class SACActorNetworks(nnx.Module):
         loc, log_std = jnp.split(loc, 2, axis=-1)
         std = (jnp.exp(log_std) + self.min_std) * scale
         pi = distrax.Transformed(distrax.Normal(loc=loc, scale=std), distrax.Tanh())
+        pi = distrax.Independent(pi, reinterpreted_batch_ndims=1)
         return pi
 
     def det_action(self, obs: jax.Array) -> jax.Array:
