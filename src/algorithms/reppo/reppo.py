@@ -10,7 +10,7 @@ from flax import nnx, struct
 from flax.struct import PyTreeNode
 from jax import numpy as jnp
 from omegaconf import DictConfig, OmegaConf
-from gymnax.environments.spaces import Space
+from gymnax.environments.spaces import Space, Discrete, Box
 import wandb
 from src.common import (
     Key,
@@ -21,9 +21,13 @@ from src.common import (
 from src.normalization import Normalizer
 from src.algorithms import envs, utils
 from src.algorithms.reppo.networks import (
-    CategoricalCriticNetwork,
-    CriticNetwork,
-    SACActorNetworks,
+    ContinuousCategoricalQNetwork,
+    DiscreteActorNetwork,
+    DiscreteCategoricalQNetwork,
+    ContinuousQNetwork,
+    DiscreteQNetwork,
+    ContinuousActorNetwork,
+)
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -101,20 +105,20 @@ def make_reppo_policy_fn(cfg: ReppoConfig) -> Callable[[REPPOTrainState, bool], 
         axis=0,
     )
 
+
     def policy_fn(train_state: REPPOTrainState, eval: bool) -> Policy:
         normalizer = Normalizer()
-        actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
+        actor_model: DiscreteActorNetwork | ContinuousActorNetwork = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
 
         def policy(key: Key, obs: jax.Array, **kwargs) -> tuple[jax.Array, dict]:
             if train_state.normalization_state is not None:
                 obs = normalizer.normalize(train_state.normalization_state, obs)
 
             if eval:
-                action: jax.Array = actor_model.det_action(obs)
+                action: jax.Array = actor_model(obs, deterministic=eval)
             else:
-                pi = actor_model.actor(obs, scale=offset)
+                pi = actor_model(obs, scale=offset)
                 action = pi.sample(seed=key)
-                action = jnp.clip(action, -0.999, 0.999)
             return action, {}
 
         return policy
@@ -127,10 +131,76 @@ def make_reppo_init_fn(
     observation_space: Space,
     action_space: Space,
 ) -> Callable[[jax.Array], REPPOTrainState]:
-    def init(key: Key) -> REPPOTrainState:
-        # Number of calls to train_step
+
+    def init_discrete_networks(key: Key):
         key, model_key = jax.random.split(key)
-        actor_networks = SACActorNetworks(
+        if cfg.hl_gauss:
+            critic = DiscreteCategoricalQNetwork(
+                obs_dim=observation_space.shape[0],
+                num_actions=action_space.n,
+                hidden_dim=cfg.critic_hidden_dim,
+                use_norm=cfg.use_critic_norm,
+                encoder_layers=cfg.num_critic_encoder_layers,
+                num_bins=cfg.num_bins,
+                vmin=cfg.vmin,
+                vmax=cfg.vmax,
+                use_skip=cfg.use_critic_skip,
+                rngs=nnx.Rngs(model_key),
+            )
+        else:
+            critic = DiscreteQNetwork(
+                obs_dim=observation_space.shape[0],
+                num_actions=action_space.n,
+                hidden_dim=cfg.critic_hidden_dim,
+                use_norm=cfg.use_critic_norm,
+                encoder_layers=cfg.num_critic_encoder_layers,
+                head_layers=cfg.num_critic_head_layers,
+                pred_layers=cfg.num_critic_pred_layers,
+                use_skip=cfg.use_critic_skip,
+                rngs=nnx.Rngs(model_key),
+            )
+
+        actor = DiscreteActorNetwork(
+            obs_dim=observation_space.shape[0],
+            num_actions=action_space.n,
+            hidden_dim=cfg.actor_hidden_dim,
+            ent_start=cfg.ent_start,
+            kl_start=cfg.kl_start,
+            use_norm=cfg.use_actor_norm,
+            layers=cfg.num_actor_layers,
+            min_std=cfg.actor_min_std,
+            use_skip=cfg.use_actor_skip,
+            rngs=nnx.Rngs(model_key),
+        )
+        return actor, critic
+
+    def init_continuous_networks(key: Key):
+        key, model_key = jax.random.split(key)
+        if cfg.hl_gauss:
+            critic = ContinuousCategoricalQNetwork(
+                obs_dim=observation_space.shape[0],
+                action_dim=action_space.shape[0],
+                hidden_dim=cfg.critic_hidden_dim,
+                use_norm=cfg.use_critic_norm,
+                encoder_layers=cfg.num_critic_encoder_layers,
+                num_bins=cfg.num_bins,
+                vmin=cfg.vmin,
+                vmax=cfg.vmax,
+                use_skip=cfg.use_critic_skip,
+                rngs=nnx.Rngs(model_key),
+            )
+        else:
+            critic = ContinuousQNetwork(
+                obs_dim=observation_space.shape[0],
+                action_dim=action_space.shape[0],
+                hidden_dim=cfg.critic_hidden_dim,
+                use_norm=cfg.use_critic_norm,
+                encoder_layers=cfg.num_critic_encoder_layers,
+                head_layers=cfg.num_critic_head_layers,
+                use_skip=cfg.use_critic_skip,
+                rngs=nnx.Rngs(model_key),
+            )
+        actor = ContinuousActorNetwork(
             obs_dim=observation_space.shape[0],
             action_dim=action_space.shape[0],
             hidden_dim=cfg.actor_hidden_dim,
@@ -138,39 +208,19 @@ def make_reppo_init_fn(
             kl_start=cfg.kl_start,
             use_norm=cfg.use_actor_norm,
             layers=cfg.num_actor_layers,
+            min_std=cfg.actor_min_std,
             use_skip=cfg.use_actor_skip,
             rngs=nnx.Rngs(model_key),
         )
+        return actor, critic
 
-        if cfg.hl_gauss:
-            critic_networks: nnx.Module = CategoricalCriticNetwork(
-                obs_dim=observation_space.shape[0],
-                action_dim=action_space.shape[0],
-                hidden_dim=cfg.critic_hidden_dim,
-                num_bins=cfg.num_bins,
-                vmin=cfg.vmin,
-                vmax=cfg.vmax,
-                use_norm=cfg.use_critic_norm,
-                encoder_layers=cfg.num_critic_encoder_layers,
-                use_simplical_embedding=cfg.use_simplical_embedding,
-                head_layers=cfg.num_critic_head_layers,
-                pred_layers=cfg.num_critic_pred_layers,
-                use_skip=cfg.use_critic_skip,
-                rngs=nnx.Rngs(model_key),
-            )
+    def init(key: Key) -> REPPOTrainState:
+        # Number of calls to train_step
+        key, model_key = jax.random.split(key)
+        if isinstance(action_space, Discrete):
+            actor, critic = init_discrete_networks(model_key)
         else:
-            critic_networks: nnx.Module = CriticNetwork(
-                obs_dim=observation_space.shape[0],
-                action_dim=action_space.shape[0],
-                hidden_dim=cfg.critic_hidden_dim,
-                use_norm=cfg.use_critic_norm,
-                encoder_layers=cfg.num_critic_encoder_layers,
-                use_simplical_embedding=cfg.use_simplical_embedding,
-                head_layers=cfg.num_critic_head_layers,
-                pred_layers=cfg.num_critic_pred_layers,
-                use_skip=cfg.use_critic_skip,
-                rngs=nnx.Rngs(model_key),
-            )
+            actor, critic = init_continuous_networks(model_key)
 
         if not cfg.anneal_lr:
             lr = cfg.lr
@@ -191,25 +241,24 @@ def make_reppo_init_fn(
             critic_optimizer = optax.adam(lr)
 
         actor_trainstate = nnx.TrainState.create(
-            graphdef=nnx.graphdef(actor_networks),
-            params=nnx.state(actor_networks),
+            graphdef=nnx.graphdef(actor),
+            params=nnx.state(actor),
             tx=actor_optimizer,
         )
         actor_target_trainstate = nnx.TrainState.create(
-            graphdef=nnx.graphdef(actor_networks),
-            params=nnx.state(actor_networks),
+            graphdef=nnx.graphdef(actor),
+            params=nnx.state(actor),
             tx=optax.set_to_zero(),
         )
         critic_trainstate = nnx.TrainState.create(
-            graphdef=nnx.graphdef(critic_networks),
-            params=nnx.state(critic_networks),
+            graphdef=nnx.graphdef(critic),
+            params=nnx.state(critic),
             tx=critic_optimizer,
         )
 
         if cfg.normalize_env:
             normalizer = Normalizer()
             norm_state = normalizer.init(jnp.zeros(observation_space.shape))
-            # obs = normalizer.normalize(norm_state, obs)
         else:
             norm_state = None
 
@@ -230,7 +279,7 @@ def make_reppo_init_fn(
     return init
 
 
-def make_reppo_learner_fn(cfg: ReppoConfig):
+def make_reppo_learner_fn(cfg: ReppoConfig, discrete_actions: bool):
     normalizer = Normalizer()
 
     def critic_loss_fn(
@@ -477,39 +526,42 @@ def make_reppo_learner_fn(cfg: ReppoConfig):
         if cfg.normalize_env:
             last_obs = normalizer.normalize(train_state.normalization_state, last_obs)
 
+        obs = jnp.concatenate([batch.obs, last_obs[None]], axis=0)
+        actions = jnp.concatenate([batch.action, last_action[None]], axis=0)
+
         actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
         critic_model = nnx.merge(train_state.critic.graphdef, train_state.critic.params)
-        emb, _, _, value = critic_model.forward(batch.obs, batch.action)
-        og_pi = actor_model.actor(batch.obs)
-        pi = actor_model.actor(batch.obs, scale=offset)
+        critic_output = critic_model(obs, actions)
+        og_pi = actor_model(obs)
+        pi = actor_model(obs, scale=offset)
         key, act_key = jax.random.split(key)
 
-        last_action, last_log_prob = actor_model.actor(last_obs).sample_and_log_prob(
-            seed=act_key
-        )
-        last_emb, _, _, last_value = critic_model.forward(last_obs, last_action)
-
         log_probs = pi.log_prob(batch.action)
-        next_log_prob = jnp.concatenate([log_probs[1:], last_log_prob[None]], axis=0)
-
+       
         soft_reward = (
             batch.reward
-            - cfg.gamma * next_log_prob * actor_model.temperature()
+            - cfg.gamma * log_probs[1:] * actor_model.temperature()
         )
 
         raw_importance_weight = jnp.nan_to_num(
-            og_pi.log_prob(batch.action) - pi.log_prob(batch.action),
+            og_pi.log_prob(actions) - pi.log_prob(actions),
             nan=jnp.log(cfg.lmbda_min),
         )
         importance_weight = jnp.clip(
             raw_importance_weight, min=jnp.log(cfg.lmbda_min), max=jnp.log(1.0)
         )
 
+        if discrete_actions:
+            values = ...
+        else:
+            values = ...
+        emb = critic_output["embed"]
+
         extras = {
             "soft_reward": soft_reward * cfg.reward_scale,
-            "value": jnp.concatenate([value[1:], last_value[None]], axis=0),
-            "next_emb": jnp.concatenate([emb[1:], last_emb[None]], axis=0),
-            "importance_weight": importance_weight,
+            "value": values[1:],
+            "next_emb": emb[1:],
+            "importance_weight": importance_weight[:-1],
         }
         return extras
 
