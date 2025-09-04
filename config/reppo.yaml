@@ -24,9 +24,9 @@ hyperparameters:
   lmbda_min: 0.50 # irrelevant if no exploration noise is added
 
   # batch settings (need tuning for MJX humanoid)
-  num_steps: 128
-  num_mini_batches: 128
-  num_envs: 1024
+  num_steps: 64
+  num_mini_batches: 64
+  num_envs: 8
   num_epochs: 4
 
   # exploration settings (currently not touched)

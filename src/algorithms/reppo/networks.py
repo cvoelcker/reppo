@@ -96,10 +96,10 @@ class DiscreteCategoricalQNetwork(nnx.Module):
             rngs=rngs,
         )
 
-    def __call__(self, obs: jax.Array) -> dict[str, jax.Array]:
+    def __call__(self, obs: jax.Array, action: jax.Array | None = None) -> dict[str, jax.Array]:
         features = self.encoder(obs)
         q_inputs = nnx.swish(features)
-        q_output = self.q_head(q_inputs)
+        q_output = self.q_head(q_inputs, action)
         q_output["embed"] = features
         return q_output
 

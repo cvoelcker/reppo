@@ -170,7 +170,7 @@ class DiscreteCategoricalCriticHead(nnx.Module):
         self._num_actions = num_actions
         self._value_bins = jnp.linspace(vmin, vmax, num_bins, endpoint=True)
         self._zero_dist = nnx.Param(
-            utils.hl_gauss(jnp.zeros((num_actions,)), num_bins, vmin, vmax)
+            utils.hl_gauss(jnp.zeros((1,)), num_bins, vmin, vmax)
         )
         self.linear = nnx.Linear(
             in_features=in_features, out_features=num_actions * num_bins, rngs=rngs
@@ -178,9 +178,11 @@ class DiscreteCategoricalCriticHead(nnx.Module):
 
     def __call__(self, embed: jax.Array, action: int = None) -> dict[str, jax.Array]:
         proj = self.linear(embed)
-        logits_per_action = proj.reshape(-1, self._num_actions, self._num_bins) + self._zero_dist.value * 40.0
+        logits_per_action = proj.reshape(*embed.shape[:-1], self._num_actions, self._num_bins) + self._zero_dist.value * 40.0
         if action is not None:
-            logits = jnp.take_along_axis(logits_per_action, action, axis=-2)
+            logits = jax.vmap(lambda l, a: l[a])(
+                logits_per_action, action
+            )
         else:
             logits = logits_per_action
         probs = jax.nn.softmax(logits, axis=-1)

@@ -3,6 +3,8 @@ import math
 import time
 from typing import Callable
 
+import distrax
+import gymnasium
 import hydra
 import jax
 import optax
@@ -27,7 +29,6 @@ from src.algorithms.reppo.networks import (
     ContinuousQNetwork,
     DiscreteQNetwork,
     ContinuousActorNetwork,
-)
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -105,10 +106,11 @@ def make_reppo_policy_fn(cfg: ReppoConfig) -> Callable[[REPPOTrainState, bool], 
         axis=0,
     )
 
-
     def policy_fn(train_state: REPPOTrainState, eval: bool) -> Policy:
         normalizer = Normalizer()
-        actor_model: DiscreteActorNetwork | ContinuousActorNetwork = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
+        actor_model: DiscreteActorNetwork | ContinuousActorNetwork = nnx.merge(
+            train_state.actor.graphdef, train_state.actor.params
+        )
 
         def policy(key: Key, obs: jax.Array, **kwargs) -> tuple[jax.Array, dict]:
             if train_state.normalization_state is not None:
@@ -131,7 +133,6 @@ def make_reppo_init_fn(
     observation_space: Space,
     action_space: Space,
 ) -> Callable[[jax.Array], REPPOTrainState]:
-
     def init_discrete_networks(key: Key):
         key, model_key = jax.random.split(key)
         if cfg.hl_gauss:
@@ -217,7 +218,7 @@ def make_reppo_init_fn(
     def init(key: Key) -> REPPOTrainState:
         # Number of calls to train_step
         key, model_key = jax.random.split(key)
-        if isinstance(action_space, Discrete):
+        if isinstance(action_space, Discrete | gymnasium.spaces.Discrete):
             actor, critic = init_discrete_networks(model_key)
         else:
             actor, critic = init_continuous_networks(model_key)
@@ -286,35 +287,34 @@ def make_reppo_learner_fn(cfg: ReppoConfig, discrete_actions: bool):
         params: nnx.Param, train_state: REPPOTrainState, minibatch: Transition
     ):
         critic_model = nnx.merge(train_state.critic.graphdef, params)
-        critic_pred = critic_model.critic_cat(minibatch.obs, minibatch.action).squeeze()
-
+        critic_pred = critic_model(minibatch.obs, minibatch.action)
         target_values = minibatch.extras["target_values"]
 
         if cfg.hl_gauss:
+            pred_cat = critic_pred["probs"]
             target_cat = jax.vmap(utils.hl_gauss, in_axes=(0, None, None, None))(
                 target_values, cfg.num_bins, cfg.vmin, cfg.vmax
             )
-            critic_update_loss = optax.softmax_cross_entropy(critic_pred, target_cat)
+            critic_update_loss = optax.softmax_cross_entropy(pred_cat, target_cat)
         else:
             critic_update_loss = optax.squared_error(
-                critic_pred.reshape(-1, 1),
+                critic_pred["value"].reshape(-1, 1),
                 target_values.reshape(-1, 1),
             )
 
         # Aux loss
-        _, pred, pred_rew, value = critic_model.forward(minibatch.obs, minibatch.action)
-        aux_loss = optax.squared_error(pred, minibatch.extras["next_emb"])
-        aux_rew_loss = optax.squared_error(pred_rew, minibatch.reward.reshape(-1, 1))
+        aux_loss = optax.squared_error(
+            critic_pred["embed"], minibatch.extras["next_emb"]
+        )
+        # aux_rew_loss = optax.squared_error(critic_pred["reward"], minibatch.reward.reshape(-1, 1))
         aux_loss = jnp.mean(
-            (1 - minibatch.done.reshape(-1, 1))
-            * jnp.concatenate([aux_loss, aux_rew_loss], axis=-1),
+            (1 - minibatch.done.reshape(-1, 1)) * aux_loss,
             axis=-1,
         )
 
         # compute l2 error for logging
         critic_loss = optax.squared_error(
-            value,
-            target_values,
+            critic_pred["value"].reshape(-1, 1), target_values.reshape(-1, 1)
         )
         critic_loss = jnp.mean(critic_loss)
         loss = jnp.mean(
@@ -326,8 +326,8 @@ def make_reppo_learner_fn(cfg: ReppoConfig, discrete_actions: bool):
             critic_update_loss=critic_update_loss,
             loss=loss,
             aux_loss=aux_loss,
-            rew_aux_loss=aux_rew_loss,
-            q=value.mean(),
+            # rew_aux_loss=aux_rew_loss,
+            q=critic_pred["value"].mean(),
             abs_batch_action=jnp.abs(minibatch.action).mean(),
             reward_mean=minibatch.reward.mean(),
             target_values=target_values.mean(),
@@ -346,54 +346,40 @@ def make_reppo_learner_fn(cfg: ReppoConfig, discrete_actions: bool):
         )
 
         # SAC actor loss
-        pi = actor_model.actor(minibatch.obs)
-        pred_action, log_prob = pi.sample_and_log_prob(
-            seed=minibatch.extras["action_key"]
-        )
-        value = critic_target_model.critic(minibatch.obs, pred_action)
-        entropy = -log_prob
+        pi = actor_model(minibatch.obs)
+        old_pi = actor_target_model(minibatch.obs)
 
         # policy KL constraint
-        if cfg.reverse_kl:
-            pi_action, pi_act_log_prob = pi.sample_and_log_prob(
-                sample_shape=(16,), seed=minibatch.extras["kl_key"]
-            )
-            pi_action = jnp.clip(pi_action, -1 + 1e-4, 1 - 1e-4)
-
-            old_pi = actor_target_model.actor(minibatch.obs)
-
-            old_pi_act_log_prob = old_pi.log_prob(pi_action).mean(0)
-            pi_act_log_prob = pi_act_log_prob.mean(0)
-            kl = pi_act_log_prob - old_pi_act_log_prob
-        else:
-            old_pi_action, old_pi_act_log_prob = actor_target_model.actor(
-                minibatch.obs
-            ).sample_and_log_prob(sample_shape=(16,), seed=minibatch.extras["kl_key"])
-            old_pi_action = jnp.clip(old_pi_action, -1 + 1e-4, 1 - 1e-4)
-
-            old_pi_act_log_prob = old_pi_act_log_prob.mean(0)
-            pi_act_log_prob = pi.log_prob(old_pi_action).mean(0)
-
-            kl = old_pi_act_log_prob - pi_act_log_prob
-
+        kl = compute_kl_divergence(key=minibatch.extras["kl_key"], old_pi=old_pi, pi=pi)
         lagrangian = actor_model.lagrangian()
+        alpha = jax.lax.stop_gradient(actor_model.temperature())
+
+        if discrete_actions:
+            critic_pred = critic_target_model(minibatch.obs)
+            value = critic_pred["value"]
+            actor_loss = jnp.sum(pi.probs * ((alpha * pi.logits) - value), axis=-1)
+            entropy = pi.entropy()
+        else:
+            pred_action, log_prob = pi.sample_and_log_prob(
+                seed=minibatch.extras["action_key"]
+            )
+            critic_pred = critic_target_model(minibatch.obs, pred_action)
+            value = critic_pred["value"]
+            actor_loss = log_prob * alpha - value
+            entropy = -log_prob
 
         if cfg.actor_kl_clip_mode == "full":
             actor_loss = (
-                log_prob * jax.lax.stop_gradient(actor_model.temperature())
-                - value
-                + kl * jax.lax.stop_gradient(lagrangian) * cfg.reduce_kl
+                actor_loss + kl * jax.lax.stop_gradient(lagrangian) * cfg.reduce_kl
             )
         elif cfg.actor_kl_clip_mode == "clipped":
             actor_loss = jnp.where(
                 kl < cfg.kl_bound,
-                log_prob * jax.lax.stop_gradient(actor_model.temperature()) - value,
+                actor_loss,
                 kl * jax.lax.stop_gradient(lagrangian) * cfg.reduce_kl,
             )
         elif cfg.actor_kl_clip_mode == "value":
-            actor_loss = (
-                log_prob * jax.lax.stop_gradient(actor_model.temperature()) - value
-            )
+            actor_loss = actor_loss
         else:
             raise ValueError(f"Unknown actor loss mode: {cfg.actor_kl_clip_mode}")
 
@@ -427,6 +413,27 @@ def make_reppo_learner_fn(cfg: ReppoConfig, discrete_actions: bool):
             entropy_loss=target_entropy_loss,
             target_values=minibatch.extras["target_values"].mean(),
         )
+
+    def compute_kl_divergence(
+        key: jax.Array, pi: distrax.Distribution, old_pi: distrax.Distribution
+    ) -> jax.Array:
+        if cfg.reverse_kl:
+            pi_action, pi_act_log_prob = pi.sample_and_log_prob(
+                sample_shape=(16,), seed=key
+            )
+            pi_action = jnp.clip(pi_action, -1 + 1e-4, 1 - 1e-4)
+            old_pi_act_log_prob = old_pi.log_prob(pi_action).mean(0)
+            pi_act_log_prob = pi_act_log_prob.mean(0)
+            kl = pi_act_log_prob - old_pi_act_log_prob
+        else:
+            old_pi_action, old_pi_act_log_prob = old_pi.sample_and_log_prob(
+                sample_shape=(16,), seed=key
+            )
+            old_pi_action = jnp.clip(old_pi_action, -1 + 1e-4, 1 - 1e-4)
+            old_pi_act_log_prob = old_pi_act_log_prob.mean(0)
+            pi_act_log_prob = pi.log_prob(old_pi_action).mean(0)
+            kl = old_pi_act_log_prob - pi_act_log_prob
+        return kl
 
     def update(train_state: REPPOTrainState, batch: Transition):
         # Sample data at indices from the batch
@@ -526,42 +533,44 @@ def make_reppo_learner_fn(cfg: ReppoConfig, discrete_actions: bool):
         if cfg.normalize_env:
             last_obs = normalizer.normalize(train_state.normalization_state, last_obs)
 
-        obs = jnp.concatenate([batch.obs, last_obs[None]], axis=0)
-        actions = jnp.concatenate([batch.action, last_action[None]], axis=0)
-
         actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
         critic_model = nnx.merge(train_state.critic.graphdef, train_state.critic.params)
-        critic_output = critic_model(obs, actions)
-        og_pi = actor_model(obs)
-        pi = actor_model(obs, scale=offset)
+
+        obs = batch.obs
+        next_obs = jnp.concatenate([batch.obs[1:], last_obs[None]], axis=0)
+        actions = batch.action
         key, act_key = jax.random.split(key)
+        last_action = actor_model(last_obs, scale=offset).sample(seed=act_key)
+        next_actions = jnp.concatenate([batch.action[1:], last_action[None]], axis=0)
 
-        log_probs = pi.log_prob(batch.action)
-       
+        og_pi = actor_model(next_obs)
+        pi: distrax.Distribution = actor_model(next_obs, scale=offset)
+        next_action_log_probs = pi.log_prob(next_actions)
+
+        if discrete_actions:
+            critic_output = critic_model(next_obs)
+            next_values = jnp.sum(critic_output["value"] * pi.probs, axis=-1)
+        else:
+            critic_output = critic_model(next_obs, next_actions)
+            next_values = critic_output["value"]
+
+        next_emb = critic_output["embed"]
         soft_reward = (
-            batch.reward
-            - cfg.gamma * log_probs[1:] * actor_model.temperature()
+            batch.reward - cfg.gamma * next_action_log_probs * actor_model.temperature()
         )
-
         raw_importance_weight = jnp.nan_to_num(
-            og_pi.log_prob(actions) - pi.log_prob(actions),
+            og_pi.log_prob(next_actions) - next_action_log_probs,
             nan=jnp.log(cfg.lmbda_min),
         )
         importance_weight = jnp.clip(
             raw_importance_weight, min=jnp.log(cfg.lmbda_min), max=jnp.log(1.0)
         )
 
-        if discrete_actions:
-            values = ...
-        else:
-            values = ...
-        emb = critic_output["embed"]
-
         extras = {
             "soft_reward": soft_reward * cfg.reward_scale,
-            "value": values[1:],
-            "next_emb": emb[1:],
-            "importance_weight": importance_weight[:-1],
+            "value": next_values,
+            "next_emb": next_emb,
+            "importance_weight": importance_weight,
         }
         return extras
 
@@ -628,8 +637,7 @@ def main(cfg: DictConfig):
     config = ReppoConfig(**cfg.hyperparameters)
     config = config.replace(
         action_size_target=(
-            jnp.prod(jnp.array(env_setup.action_space.shape))
-            * config.ent_target_mult
+            jnp.prod(jnp.array(env_setup.action_space.shape)) * config.ent_target_mult
         )
     )
     if cfg.runner.type == "gymnax":
@@ -648,7 +656,7 @@ def main(cfg: DictConfig):
             observation_space=env_setup.observation_space,
             action_space=env_setup.action_space,
         ),
-        learner_fn=make_reppo_learner_fn(config),
+        learner_fn=make_reppo_learner_fn(config, discrete_actions=True),
         policy_fn=make_reppo_policy_fn(config),
         log_callback=utils.make_log_callback(),
     )
