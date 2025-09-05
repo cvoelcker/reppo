@@ -1,0 +1,5 @@
+type: atari
+name: Pong-v5
+vmin: 0
+vmax: 500
+max_episode_steps: 500

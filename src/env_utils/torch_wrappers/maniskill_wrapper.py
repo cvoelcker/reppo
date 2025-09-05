@@ -1,5 +1,16 @@
 from gymnasium import Wrapper
+import jax
+import numpy as np
 import torch
+
+
+def to_numpy(x):
+    if isinstance(x, np.ndarray):
+        return x
+    elif isinstance(x, torch.Tensor):
+        return x.cpu().numpy()
+    else:
+        return np.array(x)
 
 
 class ManiSkillWrapper(Wrapper):
@@ -9,19 +20,44 @@ class ManiSkillWrapper(Wrapper):
     with the other environments in the codebase.
     """
 
-    def __init__(self, env, max_episode_steps: int, partial_reset, device: str):
+    def __init__(self, env, max_episode_steps: int, partial_reset):
         super().__init__(env)
-        self.action_space = env.action_space
-        self.observation_space = env.observation_space
         self.metadata = env.metadata
         self.asymmetric_obs = False
         self.max_episode_steps = max_episode_steps
-
         self.partial_reset = partial_reset
 
-        self.returns = torch.zeros(env.num_envs, dtype=torch.float32, device=device)
-        self.episode_len = torch.zeros(env.num_envs, dtype=torch.float32, device=device)
-        self.success = torch.zeros(env.num_envs, dtype=torch.float32, device=device)
+        self.returns = np.zeros(env.num_envs, dtype=np.float32)
+        self.episode_len = np.zeros(env.num_envs, dtype=np.float32)
+        self.success = np.zeros(env.num_envs, dtype=np.float32)
+
+    @property
+    def action_space(self):
+        """
+        Returns the action space of the environment.
+        """
+        return self.env.action_space
+
+    @property
+    def observation_space(self):
+        """
+        Returns the observation space of the environment.
+        """
+        return self.env.observation_space
+
+    @property
+    def single_observation_space(self):
+        """
+        Returns the observation space of a single environment.
+        """
+        return self.env.single_observation_space
+
+    @property
+    def single_action_space(self):
+        """
+        Returns the action space of a single environment.
+        """
+        return self.env.single_action_space
 
     @property
     def unwrapped(self):
@@ -48,28 +84,37 @@ class ManiSkillWrapper(Wrapper):
         """
         Resets the environment and returns the initial observation.
         """
-        return self.env.reset(seed=seed, options=options)
+        obs, info = self.env.reset(seed=seed, options=options)
+        return jax.tree.map(to_numpy, obs), jax.tree.map(to_numpy, info)
 
     def step(self, action):
         """
         Takes a step in the environment with the given action.
         Returns the next observation, reward, done, and info.
         """
+        action = torch.from_numpy(action)
         obs, reward, terminated, truncated, info = self.env.step(action)
+        obs = jax.tree.map(to_numpy, obs)
+        reward = to_numpy(reward)
+        terminated = to_numpy(terminated)
+        truncated = to_numpy(truncated)
+        info = jax.tree.map(to_numpy, info)
+
         if "final_info" in info:
             self.returns = (
-                info["final_info"]["episode"]["return"] * info["_final_info"].float()
-                + (1.0 - info["_final_info"].float()) * self.returns
+                info["final_info"]["episode"]["return"]
+                * info["_final_info"].astype(np.float32)
+                + (1.0 - info["_final_info"].astype(np.float32)) * self.returns
             )
             self.episode_len = (
                 info["final_info"]["episode"]["episode_len"]
-                * info["_final_info"].float()
-                + (1.0 - info["_final_info"].float()) * self.episode_len
+                * info["_final_info"].astype(np.float32)
+                + (1.0 - info["_final_info"].astype(np.float32)) * self.episode_len
             )
             self.success = (
                 info["final_info"]["episode"]["success_once"]
-                * info["_final_info"].float()
-                + (1.0 - info["_final_info"].float()) * self.success
+                * info["_final_info"].astype(np.float32)
+                + (1.0 - info["_final_info"].astype(np.float32)) * self.success
             )
         info["log_info"] = {
             "return": self.returns,
@@ -79,11 +124,9 @@ class ManiSkillWrapper(Wrapper):
         if self.partial_reset:
             # maniskill continues bootstrap on terminated, which playground does on truncated.
             # This unifies the interfaces in a very hacky way
-            done = torch.zeros_like(
-                terminated, dtype=torch.bool, device=terminated.device
-            )
-            truncated = torch.logical_or(terminated, truncated)
+            done = np.zeros_like(terminated, dtype=bool)
+            truncated = np.logical_or(terminated, truncated)
         else:
-            done = torch.logical_or(terminated, truncated)
-            truncated = torch.zeros_like(done, dtype=torch.bool, device=done.device)
+            done = np.logical_or(terminated, truncated)
+            truncated = np.zeros_like(done, dtype=bool)
         return obs, reward, done, truncated, info

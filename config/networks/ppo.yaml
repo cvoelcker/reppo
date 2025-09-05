@@ -1,0 +1,3 @@
+_target_: src.algorithms.ppo.networks.PPONetworks
+_partial_: true
+hidden_dim: ${algorithm.hidden_dim}

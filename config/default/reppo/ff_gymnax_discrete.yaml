@@ -1,0 +1,16 @@
+defaults:
+  - algorithm: reppo
+  - env: gymnax
+  - networks: reppo_discrete
+  - logging: wandb_offline
+  - runner: gymnax
+  - _self_
+  
+seed: 0
+name: "reppo"
+tags: ["reppo", "gymnax", "discrete"]
+hydra:
+  job:
+    chdir: True
+  searchpath:
+    - file://config

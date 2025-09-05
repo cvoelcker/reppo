@@ -1,0 +1,29 @@
+encoder: 
+  _target_: src.networks.AtariCNN
+  
+
+actor:
+  _target_: src.algorithms.reppo.networks.SACDiscreteActorNetworks
+  _partial_: true
+  hidden_dim: ${hyperparameters.actor_hidden_dim}
+  ent_start: ${hyperparameters.ent_start}
+  kl_start: ${hyperparameters.kl_start}
+  use_norm: ${hyperparameters.use_actor_norm}
+  layers: ${hyperparameters.num_actor_layers}
+  min_std: ${hyperparameters.actor_min_std}
+  use_skip: ${hyperparameters.use_actor_skip}
+
+
+critic:
+  _target_: src.algorithms.reppo.networks.DiscreteCategoricalCriticNetwork
+  _partial_: true
+  hidden_dim: ${hyperparameters.critic_hidden_dim}
+  use_norm: ${hyperparameters.use_critic_norm}
+  use_simplical_embedding: false
+  encoder_layers: ${hyperparameters.num_critic_encoder_layers}
+  head_layers: ${hyperparameters.num_critic_head_layers}
+  pred_layers: ${hyperparameters.num_critic_pred_layers}
+  num_bins: ${hyperparameters.num_bins}
+  vmin: ${env.vmin}
+  vmax: ${env.vmax}
+  use_skip: ${hyperparameters.use_critic_skip}

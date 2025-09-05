@@ -1,12 +1,16 @@
 type: maniskill
-name:
-reconfiguration_freq: 1
+name: PickCube-v1
+reconfiguration_freq: null
+eval_reconfiguration_freq: 1
 partial_reset: true
+eval_partial_reset: false
 asymmetric_obs: false
 max_episode_steps: 50
 stochastic_eval: true
 has_final_obs: true
-
+control_mode: pd_joint_delta_pos
+capture_video: false
+save_train_video_freq: null
 env_kwargs:
   obs_mode: state
   render_mode: rgb_array

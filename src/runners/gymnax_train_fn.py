@@ -19,16 +19,19 @@ import jax.numpy as jnp
 
 
 def make_train_fn(
-    cfg: Config,
     env: Environment | tuple[Environment, Environment],
+    total_time_steps: int,
+    num_steps: int,
+    num_envs: int,
+    num_eval: int,
+    num_seeds: int,
+    max_episode_steps: int,
     init_fn: InitFn,
     policy_fn: PolicyFn,
     learner_fn: LearnerFn,
     eval_fn: EvalFn | None = None,
     rollout_fn: RolloutFn | None = None,
     log_callback: LogCallback | None = None,
-    num_seeds: int = 1,
-    mode: str = "scan",
 ) -> TrainFn:
     # Initialize the environment and wrap it to admit vectorized behavior.
     if isinstance(env, tuple):
@@ -36,15 +39,13 @@ def make_train_fn(
     else:
         eval_env = env
 
-    eval_interval = int(
-        (cfg.total_time_steps / (cfg.num_steps * cfg.num_envs)) // cfg.num_eval
-    )
+    eval_interval = int((total_time_steps / (num_steps * num_envs)) // num_eval)
 
     if eval_fn is None:
-        eval_fn = make_eval_fn(eval_env, cfg.max_episode_steps)
+        eval_fn = make_eval_fn(eval_env, max_episode_steps)
 
     if rollout_fn is None:
-        rollout_fn = make_rollout_fn(cfg, env)
+        rollout_fn = make_rollout_fn(env, num_steps=num_steps, num_envs=num_envs)
 
     def train_step(
         state: TrainState, key: Key
@@ -95,14 +96,14 @@ def make_train_fn(
     def init_train_state(key: Key) -> TrainState:
         key, env_key = jax.random.split(key)
         train_state = init_fn(key)
-        obs, env_state = utils.init_env_state(key=env_key, env=env, num_envs=cfg.num_envs)
+        obs, env_state = utils.init_env_state(key=env_key, env=env, num_envs=num_envs)
         train_state = train_state.replace(last_obs=obs, last_env_state=env_state)
         return train_state
 
     # Define the training loop
     def scan_train_fn(key: Key) -> tuple[TrainState, dict]:
         # Initialize the policy, environment and map that across the number of random seeds
-        num_train_steps = cfg.total_time_steps // (cfg.num_steps * cfg.num_envs)
+        num_train_steps = total_time_steps // (num_steps * num_envs)
         num_iterations = num_train_steps // eval_interval + int(
             num_train_steps % eval_interval != 0
         )
@@ -112,7 +113,6 @@ def make_train_fn(
         # Run the training and evaluation loop from the initialized training state
         state, metrics = jax.lax.scan(f=train_eval_loop_body, init=train_state, xs=keys)
         return state, metrics
-
 
     return scan_train_fn
 
@@ -156,7 +156,7 @@ def make_eval_fn(env: Environment, max_episode_steps: int) -> EvalFn:
     return evaluation_fn
 
 
-def make_rollout_fn(cfg: Config, env: Environment) -> RolloutFn:
+def make_rollout_fn(env: Environment, num_steps: int, num_envs: int) -> RolloutFn:
     def collect_rollout(
         key: Key, train_state: TrainState, policy: Policy
     ) -> tuple[Transition, TrainState]:
@@ -168,7 +168,7 @@ def make_rollout_fn(cfg: Config, env: Environment) -> RolloutFn:
             key, act_key, step_key = jax.random.split(key, 3)
             action, _ = policy(act_key, obs)
             # Take a step in the environment
-            step_key = jax.random.split(step_key, cfg.num_envs)
+            step_key = jax.random.split(step_key, num_envs)
             next_obs, next_env_state, reward, done, info = env.step(
                 step_key, env_state, action
             )
@@ -197,7 +197,7 @@ def make_rollout_fn(cfg: Config, env: Environment) -> RolloutFn:
                 train_state,
                 train_state.last_obs,
             ),
-            length=cfg.num_steps,
+            length=num_steps,
         )
         # Aggregate the transitions across all the environments to reset for the next iteration
         _, last_env_state, train_state, last_obs = rollout_state
@@ -205,7 +205,7 @@ def make_rollout_fn(cfg: Config, env: Environment) -> RolloutFn:
         train_state = train_state.replace(
             last_env_state=last_env_state,
             last_obs=last_obs,
-            time_steps=train_state.time_steps + cfg.num_steps * cfg.num_envs,
+            time_steps=train_state.time_steps + num_steps * num_envs,
         )
 
         return transitions, train_state

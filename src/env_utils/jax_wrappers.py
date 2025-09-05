@@ -247,13 +247,12 @@ class BraxGymnaxWrapper:
         self.reward_scaling = reward_scaling
 
     def reset(self, key):
-        state = self.env.reset(key)
+        state = jax.vmap(self.env.reset)(key)
         return state.obs, state
 
     def step(self, key, state, action):
-        next_state = self.env.step(state, action)
+        next_state = jax.vmap(self.env.step)(state, action)
         return (
-            next_state.obs,
             next_state.obs,
             next_state,
             next_state.reward * self.reward_scaling,
@@ -263,10 +262,6 @@ class BraxGymnaxWrapper:
 
     def observation_space(self):
         return spaces.Box(
-            low=-jnp.inf,
-            high=jnp.inf,
-            shape=(self.env.observation_size,),
-        ), spaces.Box(
             low=-jnp.inf,
             high=jnp.inf,
             shape=(self.env.observation_size,),

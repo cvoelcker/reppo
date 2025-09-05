@@ -1,30 +1,8 @@
-import math
-from typing import Sequence, Union
-
-import distrax
+import flax
+from flax import nnx
 import jax
 import jax.numpy as jnp
-from flax import nnx
-
-from src.algorithms import utils
-
-
-def torch_he_uniform(
-    in_axis: Union[int, Sequence[int]] = -2,
-    out_axis: Union[int, Sequence[int]] = -1,
-    batch_axis: Sequence[int] = (),
-    dtype=jnp.float_,
-):
-    "TODO: push to jax"
-    return nnx.initializers.variance_scaling(
-        0.3333,
-        "fan_in",
-        "uniform",
-        in_axis=in_axis,
-        out_axis=out_axis,
-        batch_axis=batch_axis,
-        dtype=dtype,
-    )
+from gymnax.environments.spaces import Space, Box, Discrete
 
 
 class UnitBallNorm(nnx.Module):
@@ -75,6 +53,13 @@ class MLP(nnx.Module):
         self.layers = layers
         self.input_activation = input_activation
         self.hidden_activation = hidden_activation
+        if output_activation is None:
+            self.output_activation = Identity()
+        elif output_activation == True:
+            self.output_activation = hidden_activation
+        else:
+            self.output_activation = output_activation
+
         self.input_skip = input_skip
         self.hidden_skip = hidden_skip
         self.output_skip = output_skip
@@ -103,7 +88,7 @@ class MLP(nnx.Module):
             hidden_dim,
             out_features,
             use_norm=use_output_norm,
-            activation=output_activation,
+            activation=self.output_activation,
         )
 
     def __call__(self, x: jax.Array) -> jax.Array:
@@ -124,67 +109,130 @@ class MLP(nnx.Module):
         return _potentially_skip(self.output_skip, x, self.output_layer)
 
 
-class ContinuousCategoricalCriticHead(nnx.Module):
+class MLPStateEncoder(nnx.Module):
     def __init__(
         self,
-        in_features: int,
-        num_bins: int = 51,
-        vmin: float = -10.0,
-        vmax: float = 10.0,
-        *,
+        observation_space: Space,
+        output_dim: int,
         rngs: nnx.Rngs,
+        **kwargs,
     ):
-        self._num_bins = num_bins
-        self._vmin = vmin
-        self._vmax = vmax
-        self._value_bins = jnp.linspace(vmin, vmax, num_bins, endpoint=True)
-        self.zero_dist = nnx.Param(
-            utils.hl_gauss(jnp.zeros((1,)), num_bins, vmin, vmax)
-        )
-        self.linear = nnx.Linear(
-            in_features=in_features, out_features=num_bins, rngs=rngs
-        )
-
-    def __call__(self, x: jax.Array) -> dict[str, jax.Array]:
-        logits = self.linear(x) + self.zero_dist.value * 40.0
-        probs = jax.nn.softmax(logits, axis=-1)
-        value = probs.dot(self._value_bins)
-        return {"logits": logits, "probs": probs, "value": value}
-
-
-class DiscreteCategoricalCriticHead(nnx.Module):
-
-    def __init__(
-        self,
-        in_features: int,
-        num_actions: int,
-        num_bins: int = 51,
-        vmin: float = -10.0,
-        vmax: float = 10.0,
-        *,
-        rngs: nnx.Rngs,
-    ):
-        self._num_bins = num_bins
-        self._vmin = vmin
-        self._vmax = vmax
-        self._num_actions = num_actions
-        self._value_bins = jnp.linspace(vmin, vmax, num_bins, endpoint=True)
-        self._zero_dist = nnx.Param(
-            utils.hl_gauss(jnp.zeros((1,)), num_bins, vmin, vmax)
-        )
-        self.linear = nnx.Linear(
-            in_features=in_features, out_features=num_actions * num_bins, rngs=rngs
-        )
-
-    def __call__(self, embed: jax.Array, action: int = None) -> dict[str, jax.Array]:
-        proj = self.linear(embed)
-        logits_per_action = proj.reshape(*embed.shape[:-1], self._num_actions, self._num_bins) + self._zero_dist.value * 40.0
-        if action is not None:
-            logits = jax.vmap(lambda l, a: l[a])(
-                logits_per_action, action
+        super().__init__()
+        if isinstance(observation_space, Box):
+            self.encoder = MLP(
+                in_features=observation_space.shape[0],
+                out_features=output_dim,
+                **kwargs,
+                rngs=rngs,
+            )
+        elif isinstance(observation_space, Discrete):
+            self.encoder = nnx.Embed(
+                num_embeddings=observation_space.n,
+                features=output_dim,
+                rngs=rngs,
             )
         else:
-            logits = logits_per_action
-        probs = jax.nn.softmax(logits, axis=-1)
-        value = probs.dot(self._value_bins)
-        return {"logits": logits, "probs": probs, "value": value}
+            raise NotImplementedError(
+                f"StateEncoder not implemented for observation space type {type(observation_space)}"
+            )
+
+    def __call__(self, obs: jax.Array) -> jax.Array:
+        return self.encoder(obs)
+
+
+class MLPStateActionEncoder(nnx.Module):
+    def __init__(
+        self,
+        observation_space: Space,
+        action_space: Space,
+        output_dim: int,
+        rngs: nnx.Rngs,
+        **kwargs,
+    ):
+        super().__init__()
+        self.state_encoder = MLP(
+            in_features=observation_space.shape[0],
+            out_features=output_dim,
+            **kwargs,
+            rngs=rngs,
+        )
+        if isinstance(action_space, Box):
+            self.action_encoder = MLP(
+                in_features=action_space.shape[0],
+                out_features=output_dim,
+                **kwargs,
+                rngs=rngs,
+            )
+        elif isinstance(action_space, Discrete):
+            self.action_encoder = nnx.Embed(
+                num_embeddings=action_space.n,
+                features=output_dim,
+                rngs=rngs,
+            )
+        else:
+            raise NotImplementedError(
+                f"ActionEncoder not implemented for action space type {type(action_space)}"
+            )
+        self.project = nnx.Linear(
+            in_features=2 * output_dim,
+            out_features=output_dim,
+            rngs=rngs,
+        )
+
+    def __call__(self, obs: jax.Array, action: jax.Array) -> jax.Array:
+        state_embedding = self.state_encoder(obs)
+        action_embedding = self.action_encoder(action)
+        combined = jnp.concatenate([state_embedding, action_embedding], axis=-1)
+        return self.project(combined)
+
+
+class AtariCNNEncoder(nnx.Module):
+    def __init__(self, output_dim: int, *, rngs: nnx.Rngs):
+        super().__init__()
+        self.cnn = nnx.Sequential(
+            [
+                nnx.Conv(
+                    in_features=4,
+                    out_features=32,
+                    kernel_size=(8, 8),
+                    strides=(4, 4),
+                    padding="VALID",
+                    use_bias=False,
+                    rngs=rngs,
+                ),
+                nnx.relu,
+                nnx.Conv(
+                    in_features=32,
+                    out_features=64,
+                    kernel_size=(4, 4),
+                    strides=(2, 2),
+                    padding="VALID",
+                    use_bias=False,
+                    rngs=rngs,
+                ),
+                nnx.relu,
+                nnx.Conv(
+                    in_features=64,
+                    out_features=64,
+                    kernel_size=(3, 3),
+                    strides=(1, 1),
+                    padding="VALID",
+                    use_bias=False,
+                    rngs=rngs,
+                ),
+                nnx.relu,
+            ]
+        )
+        self.project = nnx.Linear(
+            in_features=7 * 7 * 64,
+            out_features=output_dim,
+            use_bias=True,
+            rngs=rngs,
+        )
+
+    def __call__(self, obs: jax.Array) -> jax.Array:
+        x = obs / 255.0
+        x = self.cnn(x)
+        x = x.reshape(*x.shape[:-3], -1)
+        x = self.project(x)
+        return x

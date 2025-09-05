@@ -166,8 +166,24 @@ def make_log_callback():
         episode_return = metrics["eval/episode_return"].mean()
         # Use pop() with a default value of None in case 'advantages' key doesn't exist
         advantages = metrics.pop("train/advantages", None)
+        log_strs = []
+        pev_category = None
+        for k, v in sorted(metrics.items()):
+            if isinstance(v, jnp.ndarray):
+                metrics[k] = v.mean()
+            if "/" in k:
+                category = k.split("/")[0]
+                log_item = k.split("/")[1]
+                if pev_category != category:
+                    log_strs.append(f"  {category}/")
+                    pev_category = category
+                log_strs.append(f"    {log_item}={metrics[k]:.3f}")
+            else:
+                log_strs.append(f"  {k}={metrics[k]:.3f}")
+           
+        log_strs.append(f"sps={sps:.2f}")
         logging.info(
-            f"step={state.time_steps} episode_return={episode_return:.3f}, sps={sps:.2f}"
+            "\n" + "\n".join(log_strs)
         )
         log_data = {
             "eval/episode_return": episode_return,

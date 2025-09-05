@@ -1,1 +1,8 @@
-type: gymnax
+_target_: src.runners.gymnax_train_fn.make_train_fn
+_partial_: true
+num_steps: ${algorithm.num_steps}
+total_time_steps: ${algorithm.total_time_steps}
+num_envs: ${algorithm.num_envs}
+num_eval: ${algorithm.num_eval}
+max_episode_steps: ${algorithm.max_episode_steps}
+num_seeds: 1

@@ -1,4 +1,5 @@
-hyperparameters:
+# @package _global_
+algorithm:
   num_envs: 1024
   num_steps: 32
   num_mini_batches: 16

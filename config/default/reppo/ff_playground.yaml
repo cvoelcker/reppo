@@ -1,0 +1,16 @@
+defaults:
+  - algorithm: reppo
+  - env: mjx_dmc
+  - networks: reppo_continuous
+  - logging: wandb_offline
+  - runner: gymnax
+  - _self_
+  
+seed: 0
+name: "reppo"
+tags: ["reppo", "mujoco_playground"]
+hydra:
+  job:
+    chdir: True
+  searchpath:
+    - file://config

@@ -1,4 +1,5 @@
-hyperparameters:
+# @package _global_
+algorithm:
   gamma: 0.97
   critic_hidden_dim: 1024
   num_envs: 1024

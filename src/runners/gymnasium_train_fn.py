@@ -19,8 +19,12 @@ from src.common import (
 
 
 def make_train_fn(
-    cfg: Config,
     env: gymnasium.Env | tuple[gymnasium.Env, gymnasium.Env],
+    total_time_steps: int,
+    num_steps: int,
+    num_envs: int,
+    num_eval: int,
+    max_episode_steps: int,
     init_fn: InitFn,
     policy_fn: PolicyFn,
     learner_fn: LearnerFn,
@@ -34,15 +38,15 @@ def make_train_fn(
         eval_env = env
 
     if rollout_fn is None:
-        rollout_fn = make_gymnasium_rollout_fn(env, cfg.num_steps, cfg.num_envs)
+        rollout_fn = make_gymnasium_rollout_fn(env, num_steps, num_envs)
 
     if eval_fn is None:
-        eval_fn = make_gymnasium_eval_fn(eval_env, cfg.max_episode_steps)
+        eval_fn = make_gymnasium_eval_fn(eval_env, max_episode_steps)
 
     def loop_train_fn(key: Key) -> tuple[TrainState, dict]:
         # Initialize the policy, environment and map that across the number of random seeds
-        num_train_steps = cfg.total_time_steps // (cfg.num_steps * cfg.num_envs)
-        num_iterations = cfg.num_eval
+        num_train_steps = total_time_steps // (num_steps * num_envs)
+        num_iterations = num_eval
         train_steps_per_iteration = num_train_steps // num_iterations
         eval_interval = num_train_steps // num_iterations
         key, init_key = jax.random.split(key)
@@ -94,7 +98,7 @@ def make_gymnasium_rollout_fn(
             action, _ = policy(act_key, obs)
             # Take a step in the environment
             next_obs, reward, done, truncated, info = env.step(
-                np.array(action)  # Gymnasium envs don't support vectorized actions
+                np.array(action)
             )
             # Record the transition
             transition = Transition(
@@ -109,7 +113,6 @@ def make_gymnasium_rollout_fn(
             obs = next_obs
 
         transitions = jax.tree.map(lambda *xs: jnp.stack(xs), *transitions)
-        print(transitions.obs.shape)
         train_state = train_state.replace(
             last_obs=obs,
             last_env_state=None,

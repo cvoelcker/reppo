@@ -19,7 +19,7 @@ from src.common import (
     make_train_fn,
 )
 from src.normalization import Normalizer
-from src.algorithms.ppo.ppo import (
+from src.algorithms.ppo.learner import (
     PPOConfig,
     PPOTrainState,
     make_ppo_init_fn,
