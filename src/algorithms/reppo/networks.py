@@ -594,3 +594,39 @@ class SACDiscreteActorNetworks(nnx.Module):
 
     def lagrangian(self) -> jax.Array:
         return jnp.exp(self.lagrangian_log_param.value)
+
+
+
+class Critic(nnx.Module):
+    def __init__(
+        self,
+        q_network: ContinuousCategoricalCriticNetwork | DiscreteCategoricalCriticNetwork,
+        asymmetric_obs: bool = False,
+    ):
+        self.q_network = q_network
+        self.asymmetric_obs = asymmetric_obs
+
+    def __call__(self, obs: jax.Array, action: jax.Array) -> jax.Array:
+        if self.asymmetric_obs:
+            assert (
+                isinstance(obs, dict) and "privileged_state" in obs
+            ), "Privileged state must be provided for asymmetric observations."
+            obs = obs["privileged_state"]
+        return self.q_network(obs, action)
+    
+class Actor(nnx.Module):
+    def __init__(
+        self,
+        actor_network: SACActorNetworks | SACDiscreteActorNetworks,
+        asymmetric_obs: bool = False,
+    ):
+        self.actor_network = actor_network
+        self.asymmetric_obs = asymmetric_obs
+
+    def __call__(self, obs: jax.Array) -> distrax.Distribution:
+        if self.asymmetric_obs:
+            assert (
+                isinstance(obs, dict) and "state" in obs
+            ), "State must be provided for actor."
+            obs = obs["state"]
+        return self.actor_network.actor(obs)

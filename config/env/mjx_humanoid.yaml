@@ -1,5 +1,5 @@
 type: mjx
-name: 
+name: G1JoystickRoughTerrain
 max_episode_steps: 1000
 reward_scaling: 1.0
 terminate: false

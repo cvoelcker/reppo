@@ -10,6 +10,7 @@ from flax.struct import PyTreeNode
 from jax import numpy as jnp
 from omegaconf import DictConfig
 from gymnax.environments.spaces import Space, Box
+from src.algorithms.reppo.networks import Actor, Critic
 from src.common import (
     InitFn,
     Key,
@@ -139,18 +140,6 @@ def make_default_init_fn(
         key, model_key = jax.random.split(key)
         rngs = nnx.Rngs(model_key)
 
-        critic = hydra.utils.instantiate(cfg.networks.critic)(
-            action_space=action_space,
-            observation_space=observation_space,
-            rngs=rngs,
-        )
-
-        actor = hydra.utils.instantiate(cfg.networks.actor)(
-            action_space=action_space,
-            observation_space=observation_space,
-            rngs=rngs,
-        )
-
         if not hparams.anneal_lr:
             lr = hparams.lr
         else:
@@ -169,9 +158,42 @@ def make_default_init_fn(
 
         if hparams.normalize_env:
             normalizer = Normalizer()
-            norm_state = normalizer.init(jnp.zeros(observation_space.shape))
+            norm_state = normalizer.init(
+                jax.tree.map(
+                    jnp.zeros_like,
+                    observation_space.sample(key),
+                )
+            )
         else:
             norm_state = None
+
+        if cfg.env.get("asymmetric_observation", False):
+            q_observation_space = observation_space.spaces["privileged_state"]
+            actor_observation_space = observation_space.spaces["state"]
+        else:
+            q_observation_space = observation_space
+            actor_observation_space = observation_space
+
+        q_network = hydra.utils.instantiate(cfg.networks.critic)(
+            action_space=action_space,
+            observation_space=q_observation_space,
+            rngs=rngs,
+        )
+
+        actor_network = hydra.utils.instantiate(cfg.networks.actor)(
+            action_space=action_space,
+            observation_space=actor_observation_space,
+            rngs=rngs,
+        )
+
+        actor = Actor(
+            actor_network=actor_network,
+            asymmetric_obs=cfg.env.get("asymmetric_observation", False),
+        )
+        critic = Critic(
+            q_network=q_network,
+            asymmetric_obs=cfg.env.get("asymmetric_observation", False),
+        )
 
         return REPPOTrainState.create(
             graphdef=nnx.graphdef(actor),
