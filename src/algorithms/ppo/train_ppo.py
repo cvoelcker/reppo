@@ -16,7 +16,7 @@ from src.algorithms import envs, utils
 
 @hydra.main(
     version_base=None,
-    config_path="../../../config/default/",
+    config_path="../../../config/default/ppo",
     config_name="ff_playground.yaml",
 )
 def main(cfg: DictConfig):
