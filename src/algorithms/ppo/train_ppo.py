@@ -9,7 +9,6 @@ from gymnax.environments.spaces import Discrete
 from src.algorithms.ppo.learner import (
     make_ppo_learner_fn,
     make_ppo_init_fn,
-    PPOConfig,
     ppo_policy_fn,
 )
 from src.algorithms import envs, utils
@@ -17,10 +16,11 @@ from src.algorithms import envs, utils
 
 @hydra.main(
     version_base=None,
-    config_path="../../../config/default/ppo",
+    config_path="../../../config/default/",
     config_name="ff_playground.yaml",
 )
 def main(cfg: DictConfig):
+    OmegaConf.resolve(cfg)
     logging.info("\n" + OmegaConf.to_yaml(cfg))
     wandb.init(
         mode=cfg.logging.mode,

@@ -1,20 +1,15 @@
-import functools
 import logging
 import math
-import time
-from typing import Callable
 
+import distrax
 import gymnasium
 import hydra
 import jax
 import optax
 from flax import nnx, struct
-from gymnax.environments.environment import Environment, EnvParams
 from jax import numpy as jnp
-from omegaconf import DictConfig, OmegaConf
-import wandb
+from omegaconf import DictConfig
 
-from src.algorithms import envs, utils
 from src.common import (
     InitFn,
     Key,
@@ -24,30 +19,8 @@ from src.common import (
     Transition,
 )
 from src.normalization import NormalizationState, Normalizer
-from src.algorithms.ppo.networks import PPONetworks
 
 logging.basicConfig(level=logging.INFO)
-
-
-class PPOConfig(struct.PyTreeNode):
-    lr: float
-    gamma: float
-    lmbda: float
-    clip_ratio: float
-    value_coef: float
-    entropy_coef: float
-    total_time_steps: int
-    num_steps: int
-    num_mini_batches: int
-    num_envs: int
-    num_epochs: int
-    max_grad_norm: float | None
-    normalize_advantages: bool
-    normalize_env: bool
-    anneal_lr: bool
-    num_eval: int = 25
-    max_episode_steps: int = 1000
-    hidden_dim: int = 64
 
 
 class PPOTrainState(TrainState):
@@ -58,13 +31,17 @@ def make_ppo_init_fn(
     cfg: DictConfig, observation_space: gymnasium.Space, action_space: gymnasium.Space
 ) -> InitFn:
     network_cfg = cfg.networks
-    cfg = PPOConfig(**cfg.algorithm)
+    algo_cfg = cfg.algorithm
+
     def init(key: Key) -> PPOTrainState:
         # Number of calls to train_step
-        num_train_steps = cfg.total_time_steps // (cfg.num_steps * cfg.num_envs)
+        num_train_steps = algo_cfg.total_time_steps // (
+            algo_cfg.num_steps * algo_cfg.num_envs
+        )
         # Number of calls to train_iter, add 1 if not divisible by eval_interval
         eval_interval = int(
-            (cfg.total_time_steps / (cfg.num_steps * cfg.num_envs)) // cfg.num_eval
+            (algo_cfg.total_time_steps / (algo_cfg.num_steps * algo_cfg.num_envs))
+            // algo_cfg.num_eval
         )
         num_iterations = num_train_steps // eval_interval + int(
             num_train_steps % eval_interval != 0
@@ -78,17 +55,21 @@ def make_ppo_init_fn(
         )
 
         # Set initial learning rate
-        if not cfg.anneal_lr:
-            lr = cfg.lr
+        if not algo_cfg.anneal_lr:
+            lr = algo_cfg.lr
         else:
-            num_iterations = cfg.total_time_steps // cfg.num_steps // cfg.num_envs
-            num_updates = num_iterations * cfg.num_epochs * cfg.num_mini_batches
-            lr = optax.linear_schedule(cfg.lr, 1e-6, num_updates)
+            num_iterations = (
+                algo_cfg.total_time_steps // algo_cfg.num_steps // algo_cfg.num_envs
+            )
+            num_updates = (
+                num_iterations * algo_cfg.num_epochs * algo_cfg.num_mini_batches
+            )
+            lr = optax.linear_schedule(algo_cfg.lr, 1e-6, num_updates)
 
         # Initialize the optimizer
-        if cfg.max_grad_norm is not None:
+        if algo_cfg.max_grad_norm is not None:
             optimizer = optax.chain(
-                optax.clip_by_global_norm(cfg.max_grad_norm),
+                optax.clip_by_global_norm(algo_cfg.max_grad_norm),
                 optax.adam(lr),
             )
         else:
@@ -97,7 +78,7 @@ def make_ppo_init_fn(
         # Reset and fully initialize the environment
         key, env_key = jax.random.split(key)
 
-        if cfg.normalize_env:
+        if algo_cfg.normalize_env:
             normalizer = Normalizer()
             norm_state = normalizer.init(jnp.zeros(observation_space.shape))
         else:
@@ -119,12 +100,18 @@ def make_ppo_init_fn(
 
 
 def make_ppo_learner_fn(cfg: DictConfig) -> LearnerFn:
-    cfg = PPOConfig(**cfg.algorithm)
+    algo_cfg = cfg.algorithm
     normalizer = Normalizer()
 
     def loss_fn(params: nnx.Param, train_state: TrainState, minibatch: Transition):
         model = nnx.merge(train_state.graphdef, params)
         pi = model.actor(minibatch.obs)
+
+        if algo_cfg.loss == "rpo":
+            pi = distrax.MultivariateNormalDiag(
+                loc=pi.mean() + minibatch.extras["action_noise"], scale_diag=pi.stddev()
+            )
+
         value = model.critic(minibatch.obs)
         log_prob = pi.log_prob(minibatch.action)
         target_values = minibatch.extras["target_value"]
@@ -132,27 +119,57 @@ def make_ppo_learner_fn(cfg: DictConfig) -> LearnerFn:
 
         value_pred_clipped = minibatch.extras["value"] + (
             value - minibatch.extras["value"]
-        ).clip(-cfg.clip_ratio, cfg.clip_ratio)
+        ).clip(-algo_cfg.clip_ratio, algo_cfg.clip_ratio)
         value_error = jnp.square(value - target_values)
         value_error_clipped = jnp.square(value_pred_clipped - target_values)
         value_loss = 0.5 * jnp.mean(
             (1.0 - minibatch.truncated) * jnp.maximum(value_error, value_error_clipped)
         )
 
-        ratio = jnp.exp(log_prob - minibatch.extras["log_prob"])
+        if algo_cfg.loss == "dpo":
+            log_diff = log_prob - minibatch.extras["log_prob"]
+            ratio = jnp.exp(log_diff)
+            r1 = ratio - 1.0
+            drift1 = jax.nn.relu(
+                r1 * advantages - algo_cfg.alpha * jax.nn.tanh(r1 * advantages / algo_cfg.alpha)
+            )
+            drift2 = jax.nn.relu(
+                log_diff * advantages
+                - algo_cfg.beta * jax.nn.tanh(log_diff * advantages / algo_cfg.beta)
+            )
+            drift = jnp.where(
+                advantages >= 0.0,
+                drift1,
+                drift2,
+            )
+            losses = ratio * advantages - drift
+            mask = 1.0 - minibatch.truncated
+            actor_loss = -jnp.mean(losses * mask)
+            entropy_loss = jnp.mean(pi.entropy())
 
-        actor_loss1 = ratio * advantages
-        actor_loss2 = (
-            jnp.clip(ratio, 1 - cfg.clip_ratio, 1 + cfg.clip_ratio) * advantages
-        )
-        actor_loss = -jnp.mean(
-            (1.0 - minibatch.truncated) * jnp.minimum(actor_loss1, actor_loss2)
-        )
-        entropy_loss = jnp.mean(pi.entropy())
+            loss = (
+                actor_loss
+                + algo_cfg.value_coef * value_loss
+                - algo_cfg.entropy_coef * entropy_loss
+            )
+        else:
+            ratio = jnp.exp(log_prob - minibatch.extras["log_prob"])
 
-        loss = (
-            actor_loss + cfg.value_coef * value_loss - cfg.entropy_coef * entropy_loss
-        )
+            actor_loss1 = ratio * advantages
+            actor_loss2 = (
+                jnp.clip(ratio, 1 - algo_cfg.clip_ratio, 1 + algo_cfg.clip_ratio)
+                * advantages
+            )
+            actor_loss = -jnp.mean(
+                (1.0 - minibatch.truncated) * jnp.minimum(actor_loss1, actor_loss2)
+            )
+            entropy_loss = jnp.mean(pi.entropy())
+
+            loss = (
+                actor_loss
+                + algo_cfg.value_coef * value_loss
+                - algo_cfg.entropy_coef * entropy_loss
+            )
 
         return loss, dict(
             actor_loss=actor_loss,
@@ -169,7 +186,7 @@ def make_ppo_learner_fn(cfg: DictConfig) -> LearnerFn:
     def update(train_state: PPOTrainState, batch: Transition):
         # Sample data at indices from the batch
 
-        if cfg.normalize_advantages:
+        if algo_cfg.normalize_advantages:
             advantages = batch.extras["advantage"]
             batch.extras["advantage"] = (advantages - jnp.mean(advantages)) / (
                 jnp.std(advantages) + 1e-8
@@ -195,11 +212,16 @@ def make_ppo_learner_fn(cfg: DictConfig) -> LearnerFn:
         key, shuffle_key = jax.random.split(key)
 
         mini_batch_size = (
-            math.floor(cfg.num_steps * cfg.num_envs) // cfg.num_mini_batches
+            math.floor(algo_cfg.num_steps * algo_cfg.num_envs)
+            // algo_cfg.num_mini_batches
         )
-        indices = jax.random.permutation(shuffle_key, cfg.num_steps * cfg.num_envs)
+        indices = jax.random.permutation(
+            shuffle_key, algo_cfg.num_steps * algo_cfg.num_envs
+        )
         minibatch_idxs = jax.tree.map(
-            lambda x: x.reshape((cfg.num_mini_batches, mini_batch_size, *x.shape[1:])),
+            lambda x: x.reshape(
+                (algo_cfg.num_mini_batches, mini_batch_size, *x.shape[1:])
+            ),
             indices,
         )
         minibatches = jax.tree.map(lambda x: jnp.take(x, minibatch_idxs, axis=0), batch)
@@ -216,7 +238,7 @@ def make_ppo_learner_fn(cfg: DictConfig) -> LearnerFn:
         # Compute advantages and target values
         model = nnx.merge(train_state.graphdef, train_state.params)
         last_obs = train_state.last_obs
-        if cfg.normalize_env:
+        if algo_cfg.normalize_env:
             norm_state = normalizer.update(train_state.normalization_state, batch.obs)
             train_state = train_state.replace(normalization_state=norm_state)
             batch = batch.replace(
@@ -227,6 +249,14 @@ def make_ppo_learner_fn(cfg: DictConfig) -> LearnerFn:
         last_value = model.critic(last_obs)
         batch.extras["value"] = model.critic(batch.obs)
         batch.extras["log_prob"] = model.actor(batch.obs).log_prob(batch.action)
+        if algo_cfg.loss == "rpo":
+            key, noise_key = jax.random.split(key)
+            batch.extras["action_noise"] = jax.random.uniform(
+                noise_key,
+                batch.action.shape,
+                minval=-algo_cfg.action_noise,
+                maxval=algo_cfg.action_noise,
+            )
 
         def compute_advantage(carry, transition):
             gae, next_value = carry
@@ -234,9 +264,9 @@ def make_ppo_learner_fn(cfg: DictConfig) -> LearnerFn:
             truncated = transition.truncated
             reward = transition.reward
             value = transition.extras["value"]
-            delta = reward + cfg.gamma * next_value * (1 - done) - value
-            gae = delta + cfg.gamma * cfg.lmbda * (1 - done) * gae
-            truncated_gae = reward + cfg.gamma * next_value - value
+            delta = reward + algo_cfg.gamma * next_value * (1 - done) - value
+            gae = delta + algo_cfg.gamma * algo_cfg.lmbda * (1 - done) * gae
+            truncated_gae = reward + algo_cfg.gamma * next_value - value
             gae = jnp.where(truncated, truncated_gae, gae)
             return (gae, value), gae
 
@@ -254,7 +284,7 @@ def make_ppo_learner_fn(cfg: DictConfig) -> LearnerFn:
         # Reshape data to (num_steps * num_envs, ...)
         data = jax.tree.map(
             lambda x: x.reshape(
-                (math.floor(cfg.num_steps * cfg.num_envs), *x.shape[2:])
+                (math.floor(algo_cfg.num_steps * algo_cfg.num_envs), *x.shape[2:])
             ),
             batch,
         )
@@ -264,7 +294,7 @@ def make_ppo_learner_fn(cfg: DictConfig) -> LearnerFn:
         train_state, update_metrics = jax.lax.scan(
             f=lambda train_state, key: run_epoch(key, train_state, data),
             init=train_state,
-            xs=jax.random.split(train_key, cfg.num_epochs),
+            xs=jax.random.split(train_key, algo_cfg.num_epochs),
         )
         # Get metrics from the last epoch
         update_metrics = jax.tree.map(lambda x: x[-1], update_metrics)
@@ -290,4 +320,3 @@ def ppo_policy_fn(train_state: PPOTrainState, eval_mode: bool) -> Policy:
         return action, dict(log_prob=log_prob, value=value)
 
     return policy
-

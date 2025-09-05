@@ -1,0 +1,16 @@
+defaults:
+  - algorithm: dpo
+  - env: maniskill
+  - networks: ppo
+  - logging: wandb_offline
+  - runner: maniskill
+  - _self_
+  
+seed: 0
+name: "dpo"
+tags: ["dpo", "maniskill"]
+hydra:
+  job:
+    chdir: True
+  searchpath:
+    - file://config

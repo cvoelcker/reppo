@@ -15,6 +15,7 @@ from src.algorithms import envs, utils
 
 @hydra.main(version_base=None, config_path="../../../config/default/reppo", config_name="ff_playground.yaml")
 def main(cfg: DictConfig):
+    OmegaConf.resolve(cfg)
     logging.info("\n" + OmegaConf.to_yaml(cfg))
     wandb.init(
         mode=cfg.logging.mode,

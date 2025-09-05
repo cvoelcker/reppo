@@ -16,4 +16,6 @@ anneal_lr: False
 num_eval: 20
 max_episode_steps: 1000
 hidden_dim: 64
-loss: ppo
+loss: dpo
+alpha: 2.0
+beta: 0.6

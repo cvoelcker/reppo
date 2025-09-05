@@ -171,6 +171,8 @@ def make_log_callback():
         for k, v in sorted(metrics.items()):
             if isinstance(v, jnp.ndarray):
                 metrics[k] = v.mean()
+            elif isinstance(v, list):
+                metrics[k] = jnp.array(v).mean()
             if "/" in k:
                 category = k.split("/")[0]
                 log_item = k.split("/")[1]

@@ -1,0 +1,16 @@
+defaults:
+  - algorithm: ppo
+  - env: maniskill
+  - networks: ppo
+  - logging: wandb_offline
+  - runner: maniskill
+  - _self_
+  
+seed: 0
+name: "ppo"
+tags: ["ppo", "maniskill"]
+hydra:
+  job:
+    chdir: True
+  searchpath:
+    - file://config

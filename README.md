@@ -36,25 +36,43 @@ pip install -e .
 
 ## Running Experiments
 
-The main code for the algorithm is in `src/jaxrl/reppo.py` and `src/torchrl/reppo.py` respectively.
-In our tests, both versions produce similar returns up to seed variance.
-However, due to slight variations in the frameworks, we cannot always guarantee this.
-
-For maximum speed, we highly recommend using our jax version.
-The torch version can result in slow experiment depending on the CPU/GPU configuration, as sampling from a squashed Gaussian is not implemented efficiently in the torch framework.
-This can result in cases where the GPU is stalled if the CPU cannot provide instructions and kernels fast enough.
-
+The main code for the algorithm is in `src/algorithms/reppo`.
 Our configurations are handled with [hydra.cc](https://hydra.cc/). This means parameters can be overwritten by using the syntax
 ```bash
-python src/jaxrl/reppo.py PARAMETER=VALUE
+python src/algorithms/reppo/train_reppo.py PARAMETER_NAME=VALUE
 ```
 
-By default, the environment type and name need to be provided.
-Currently the jax version supports `env=mjx_dmc`, `env=mjx_humanoid`, `env=brax`, and `env=humanoid_brax`. The latter is treated as a separate environment, as the reward scale is much larger than other brax environments, and the min and max Q values need to be tracked per environment.
-The torch version support `env=mjx_dmc`, and `env=maniskill`. We additionally provide wrappers for isaaclab, but this is still under development and might not work out of the box.
+Algorithms are independent of the environment, and can be run with either [gymnax](https://github.com/google/gymnax) or [gymnasium](https://github.com/Farama-Foundation/Gymnasium) style environments.
+To launch a training run, use the following command:
+```bash
+python src/algorithms/reppo/train_reppo.py --config-name ff_playground.yaml env.name=CartpoleBalance
+```
 
-The paper experiments can be reproduced easily by using the `experiment_override` settings.
-By specifying `experiment_override=mjx_smc_small_data` for example, you can run the variant of REPPO with a batch size of 32k samples.
+Algorithm configurations have the following structure:
+```
+config/
+  algorithm/
+  runner/
+  env/
+  networks/
+  logging/
+```
+The `algorithm` folder contains the core algorithm hyperparameters, such as learning rates, batch sizes, etc.
+The `runner` folder contains the environment interaction configurations, such as the type of rollout collection logic, number of steps per rollout, etc.
+The `env` folder contains environment specific parameters, such as the environment name and framework.
+The `networks` folder contains the neural network architectures. For instance, we provide configurations for continuous and discrete action spaces with feedforward networks for REPPO (`reppo_continuous`, `reppo_discrete`).
+The `logging` folder contains logging configurations, such as whether to log to wandb.
+For instance, to run REPPO on the gymnasium discrete action Cartpole-v1 environment, you can use the following command:
+```bash
+python src/algorithms/reppo/train_reppo.py algorithm=reppo runner=gymnasium env=gymnasium env.name=CartPole-v1 networks=reppo_discrete
+```
+
+Default configurations for an algorithm can be found in `config/default/ALGORITHM_NAME`.
+Those configurations can be specified with the `--config-name` flag, and can be used to run experiments for different environments quickly.
+Default configurations can be overwritten by specifying experiment specific overrides using hydras append feature:
+```bash
+python src/algorithms/reppo/train_reppo.py --config-name ff_playground.yaml +experiments=mjx_dmc_small_data env.name=CartpoleBalance
+```
 
 ## Contributing
 

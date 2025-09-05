@@ -1,0 +1,16 @@
+defaults:
+  - algorithm: ppo
+  - env: brax
+  - networks: ppo
+  - logging: wandb_offline
+  - runner: gymnax
+  - _self_
+  
+seed: 0
+name: "ppo"
+tags: ["", "brax"]
+hydra:
+  job:
+    chdir: True
+  searchpath:
+    - file://config
