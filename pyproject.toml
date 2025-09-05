@@ -34,7 +34,7 @@ dependencies = [
     "torchinfo>=1.8.0",
     "debugpy>=1.8.14",
     "jax[cuda12]==0.5.0",
-    "pufferlib[atari]>=3.0.0",
+    # "pufferlib[atari]>=3.0.0",
 ]
 
 [build-system]
