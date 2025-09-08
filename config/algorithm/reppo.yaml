@@ -60,3 +60,4 @@ ent_target_mult: 0.5
 update_entropy_lagrangian: true
 ## auxiliary loss settings
 aux_loss_mult: 1.0
+use_score_based_gradient: false
