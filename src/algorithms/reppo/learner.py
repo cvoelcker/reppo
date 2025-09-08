@@ -306,7 +306,7 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
         else:
             if cfg.use_score_based_gradient:
                 pred_action, log_prob = pi.sample_and_log_prob(
-                    seed=minibatch.extras["action_key"], sample_shape=(4,)  # WARNING: magic number
+                    seed=minibatch.extras["action_key"], sample_shape=(4 * actor_model.d,)  # WARNING: magic number
                 )
                 obs = jnp.repeat(minibatch.obs[None, ...], pred_action.shape[0], axis=0)
                 critic_pred = critic_target_model(obs, pred_action)

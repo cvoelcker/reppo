@@ -495,6 +495,7 @@ class SACActorNetworks(nnx.Module):
         self.temperature_log_param = nnx.Param(jnp.ones(1) * start_value)
         self.lagrangian_log_param = nnx.Param(jnp.ones(1) * kl_start_value)
         self.min_std = min_std
+        self.d = action_space.shape[0]
 
     def actor(
         self, obs: jax.Array, scale: float | jax.Array = 1.0
@@ -577,6 +578,7 @@ class SACDiscreteActorNetworks(nnx.Module):
         self.temperature_log_param = nnx.Param(jnp.ones(1) * start_value)
         self.lagrangian_log_param = nnx.Param(jnp.ones(1) * kl_start_value)
         self.min_std = min_std
+        self.d = action_space.n
 
     def actor(
         self, obs: jax.Array, scale: float | jax.Array = 1.0
@@ -622,6 +624,7 @@ class Actor(nnx.Module):
     ):
         self.actor_network = actor_network
         self.asymmetric_obs = asymmetric_obs
+        self.d = actor_network.d
 
     def __call__(self, obs: jax.Array, scale: jax.Array = 1.0) -> distrax.Distribution:
         if self.asymmetric_obs:
