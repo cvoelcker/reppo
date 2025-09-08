@@ -116,7 +116,7 @@ def make_default_reppo_policy_fn(
             if eval:
                 action: jax.Array = actor_model.det_action(obs)
             else:
-                pi = actor_model.actor(obs, scale=offset)
+                pi = actor_model(obs, scale=offset)
                 action = pi.sample(seed=key)
 
             if isinstance(action_space, Box):
@@ -290,8 +290,8 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
         actor_target_model = nnx.merge(
             train_state.actor.graphdef, train_state.actor_target.params
         )
-        pi = actor_model.actor(minibatch.obs)
-        old_pi = actor_target_model.actor(minibatch.obs)
+        pi = actor_model(minibatch.obs)
+        old_pi = actor_target_model(minibatch.obs)
 
         # policy KL constraint
         kl = compute_policy_kl(minibatch=minibatch, pi=pi, old_pi=old_pi)
@@ -484,11 +484,11 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
         critic_output = critic_model(batch.obs, batch.action)
         emb = critic_output["embed"]
         value = critic_output["value"]
-        og_pi = actor_model.actor(batch.obs)
-        pi = actor_model.actor(batch.obs, scale=offset)
+        og_pi = actor_model(batch.obs)
+        pi = actor_model(batch.obs, scale=offset)
         key, act_key = jax.random.split(key)
 
-        last_action, last_log_prob = actor_model.actor(last_obs).sample_and_log_prob(
+        last_action, last_log_prob = actor_model(last_obs).sample_and_log_prob(
             seed=act_key
         )
         last_critic_output = critic_model(last_obs, last_action)

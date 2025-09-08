@@ -582,7 +582,7 @@ class SACDiscreteActorNetworks(nnx.Module):
         self, obs: jax.Array, scale: float | jax.Array = 1.0
     ) -> distrax.Distribution:
         loc = self.actor_module(obs)
-        pi = distrax.Categorical(logits=loc)
+        pi = distrax.Categorical(logits=loc / scale)
         return pi
 
     def det_action(self, obs: jax.Array) -> jax.Array:
@@ -606,7 +606,7 @@ class Critic(nnx.Module):
         self.q_network = q_network
         self.asymmetric_obs = asymmetric_obs
 
-    def __call__(self, obs: jax.Array, action: jax.Array) -> jax.Array:
+    def __call__(self, obs: jax.Array, action: jax.Array = None) -> jax.Array:
         if self.asymmetric_obs:
             assert (
                 isinstance(obs, dict) and "privileged_state" in obs
@@ -623,10 +623,24 @@ class Actor(nnx.Module):
         self.actor_network = actor_network
         self.asymmetric_obs = asymmetric_obs
 
-    def __call__(self, obs: jax.Array) -> distrax.Distribution:
+    def __call__(self, obs: jax.Array, scale: jax.Array = 1.0) -> distrax.Distribution:
         if self.asymmetric_obs:
             assert (
                 isinstance(obs, dict) and "state" in obs
             ), "State must be provided for actor."
             obs = obs["state"]
-        return self.actor_network.actor(obs)
+        return self.actor_network.actor(obs, scale=scale)
+    
+    def det_action(self, obs: jax.Array) -> jax.Array:
+        if self.asymmetric_obs:
+            assert (
+                isinstance(obs, dict) and "state" in obs
+            ), "State must be provided for actor."
+            obs = obs["state"]
+        return self.actor_network.det_action(obs)
+    
+    def temperature(self) -> jax.Array:
+        return self.actor_network.temperature()
+    
+    def lagrangian(self) -> jax.Array:
+        return self.actor_network.lagrangian()
