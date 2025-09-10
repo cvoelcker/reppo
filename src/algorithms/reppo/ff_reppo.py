@@ -181,7 +181,7 @@ def make_learner_fn(
             )
 
         # Aux loss
-        pred = critic_output["embed"]
+        pred = critic_output["pred_features"]
         pred_rew = critic_output["pred_rew"]
         value = critic_output["value"]
         aux_loss = optax.squared_error(pred, minibatch.extras["next_emb"])
