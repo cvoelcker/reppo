@@ -9,7 +9,6 @@ from src.common import InitFn, LearnerFn, PolicyFn
 
 logging.basicConfig(level=logging.INFO)
 
-
 @hydra.main(
     version_base=None,
     config_path="../config/default",

@@ -9,13 +9,13 @@ from src.common import (
 )
 
 
-def make_eval_fn(env: gymnasium.Env, num_eval_steps: int) -> EvalFn:
+def make_eval_fn(env: gymnasium.Env, max_episode_steps: int) -> EvalFn:
     def evaluate(key: Key, policy: Policy) -> dict:
         # Reset the environment
         obs, _ = env.reset()
         metrics = defaultdict(list)
         num_episodes = 0
-        for _ in range(num_eval_steps):
+        for _ in range(max_episode_steps):
             key, act_key = jax.random.split(key)
             action, _ = policy(act_key, obs)
             next_obs, reward, terminated, truncated, infos = env.step(np.array(action))

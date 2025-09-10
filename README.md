@@ -69,8 +69,29 @@ Default configurations for an algorithm can be found in `config/default/ALGORITH
 Those configurations can be specified with the `--config-name` flag, and can be used to run experiments for different environments quickly.
 Default configurations can be overwritten by specifying experiment specific overrides using hydras append feature:
 ```bash
-python src/algorithms/reppo/train_reppo.py --config-name ff_playground.yaml +experiments=mjx_dmc_small_data env.name=CartpoleBalance
+python src/train.py --config-name=reppo_continuous +experiments=mjx_dmc_small_data env.name=CartpoleBalance
 ```
+
+## Experiments
+Mujoco_playground experiments can be run with
+```bash
+python src/train.py --config-name=reppo_continuous env.name=...
+```
+Brax experiments can be run with
+```bash
+python src/train.py --config-name=reppo_continuous env=brax env.name=...
+```
+Maniskill experiments can be run with
+```bash
+XLA_PYTHON_CLIENT_PREALLOCATE=false python src/train.py --config-name=reppo_maniskill env.name=...
+```
+Minatar experiments can be run with
+```bash
+python src/train.py --config-name=reppo_minatar env.name=...
+```
+Atari experiments can be run with
+```bash
+python src/train.py --config-name=reppo_atari env.name=...
 
 ## Contributing
 

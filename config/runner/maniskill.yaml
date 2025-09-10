@@ -5,11 +5,10 @@ rollout_fn:
   num_envs: ${algorithm.num_envs}
 
 eval_fn:
-  _target_: src.runners.gymnasium_runner.make_eval_fn
+  _target_: src.runners.maniskill_runner.make_eval_fn
   _partial_: true
   max_episode_steps: ${algorithm.max_episode_steps}
-  max_eval_episodes: 1000
-
+  
 train_fn:
   _target_: src.algorithms.training.make_loop_train_fn
   _partial_: true
