@@ -18,3 +18,16 @@ max_episode_steps: 1000
 hidden_dim: 64
 loss: rpo
 action_noise: 0.5
+
+network:
+  _target_: src.algorithms.ppo.networks.PPONetworks
+  _partial_: true
+init:
+  _target_: src.algorithms.ppo.ff_ppo.make_init_fn
+  _partial_: true
+learner:
+  _target_: src.algorithms.ppo.ff_ppo.make_learner_fn
+  _partial_: true
+policy:
+  _target_: src.algorithms.ppo.ff_ppo.make_policy_fn
+  _partial_: true

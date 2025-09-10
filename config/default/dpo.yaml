@@ -1,0 +1,16 @@
+defaults:
+  - algorithm: dpo
+  - env: mjx_dmc
+  - logging: wandb_offline
+  - runner: gymnax
+  - _self_
+
+  
+seed: 0
+name: "dpo"
+tags: []
+hydra:
+  job:
+    chdir: True
+  searchpath:
+    - file://config
