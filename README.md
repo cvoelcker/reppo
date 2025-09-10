@@ -92,7 +92,7 @@ python src/train.py --config-name=reppo_minatar env.name=...
 Atari experiments can be run with
 ```bash
 python src/train.py --config-name=reppo_atari env.name=...
-
+```
 ## Contributing
 
 We welcome contributions! Please feel free to submit issues and pull requests.
