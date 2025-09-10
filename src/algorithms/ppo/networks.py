@@ -4,6 +4,8 @@ import gymnax
 import jax
 from flax import nnx
 from jax import numpy as jnp
+from gymnax.environments.spaces import Discrete
+from src.networks.encoders import AtariCNNEncoder
 
 
 class PPONetworks(nnx.Module):
@@ -19,7 +21,6 @@ class PPONetworks(nnx.Module):
             action_space,
             gymnax.environments.spaces.Discrete | gymnasium.spaces.Discrete,
         )
-        print("Discrete action space:", self.discrete_action)
         if (
             isinstance(obs_space, gymnax.environments.spaces.Dict)
             and "privileged_state" in obs_space.spaces
@@ -84,4 +85,45 @@ class PPONetworks(nnx.Module):
             pi = distrax.MultivariateNormalDiag(
                 loc=loc, scale_diag=jnp.exp(self.log_std.value)
             )
+        return pi
+    
+
+class PPOAtariNetworks(nnx.Module):
+    def __init__(
+        self,
+        obs_space: gymnax.environments.spaces.Space,
+        action_space: Discrete,
+        hidden_dim: int = 64,
+        *,
+        rngs: nnx.Rngs,
+    ):
+        def linear_layer(in_features, out_features, scale=jnp.sqrt(2)):
+            return nnx.Linear(
+                in_features=in_features,
+                out_features=out_features,
+                kernel_init=nnx.initializers.orthogonal(scale=scale),
+                bias_init=nnx.initializers.zeros_init(),
+                rngs=rngs,
+            )
+        
+        cnn = AtariCNNEncoder(output_dim=hidden_dim, rngs=rngs)
+
+        self.actor_module = nnx.Sequential(
+            cnn,
+            nnx.relu,
+            linear_layer(hidden_dim, action_space.n, scale=0.01)
+        )
+
+        self.critic_module = nnx.Sequential(
+            cnn,
+            nnx.relu,
+            linear_layer(hidden_dim, 1, scale=1.0),
+        )
+
+    def critic(self, obs: jax.Array) -> jax.Array:
+        return self.critic_module(obs).squeeze()
+
+    def actor(self, obs: jax.Array) -> distrax.Distribution:
+        loc = self.actor_module(obs)
+        pi = distrax.Categorical(logits=loc)
         return pi

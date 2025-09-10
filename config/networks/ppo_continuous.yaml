@@ -1,5 +1,0 @@
-actor:
-  _target_: src.networks.ppo_continuous.Actor
-
-critic:
-  _target_: src.networks.ppo_continuous.Critic

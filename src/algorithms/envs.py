@@ -17,7 +17,6 @@ from gymnax.environments.spaces import (
 import gymnasium as gym
 from jax import numpy as jnp
 
-from src.env_utils.atari import RecordEpisodeStatistics
 from src.env_utils.jax_wrappers import (
     BatchEnv,
     BraxGymnaxWrapper,
@@ -107,6 +106,19 @@ def _make_gymnax_env(cfg: DictConfig) -> EnvSetup[Environment]:
     )
 
 
+def _make_minatar_env(cfg: DictConfig) -> EnvSetup[Environment]:
+    env, env_params = gymnax.make(cfg.env.name)
+    env = BatchEnv(env)
+    env = LogWrapper(env, num_envs=cfg.algorithm.num_envs)
+    eval_env = env
+    return EnvSetup(
+        env=env,
+        eval_env=eval_env,
+        action_space=env.action_space(env.default_params),
+        observation_space=env.observation_space(env.default_params),
+    )
+
+
 def _make_gymnasium_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
     def _make():
         env = gym.make(cfg.env.name)
@@ -115,7 +127,9 @@ def _make_gymnasium_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
         return env
 
     env = gym.vector.SyncVectorEnv([_make for _ in range(cfg.algorithm.num_envs)])
-    eval_env = gym.vector.SyncVectorEnv([_make for _ in range(cfg.algorithm.num_envs)])
+    eval_env = gym.vector.SyncVectorEnv(
+        [_make for _ in range(cfg.algorithm.num_envs)]
+    )
     return EnvSetup(
         env=env,
         eval_env=eval_env,
@@ -171,7 +185,11 @@ def _make_maniskill_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
             ignore_terminations=not partial_resets,
             record_metrics=True,
         )
-        envs = ManiSkillWrapper(envs, max_episode_steps=cfg.env.max_episode_steps, partial_reset=partial_resets)
+        envs = ManiSkillWrapper(
+            envs,
+            max_episode_steps=cfg.env.max_episode_steps,
+            partial_reset=partial_resets,
+        )
         return envs
 
     env = make_env(eval=False)
@@ -186,11 +204,12 @@ def _make_maniskill_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
 
 def _make_atari_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
     import envpool
+    from src.env_utils.atari import RecordEpisodeStatistics
 
     def make():
         env = envpool.make(
             cfg.env.name,
-            env_type="gym",
+            env_type="gymnasium",
             num_envs=cfg.algorithm.num_envs,
             episodic_life=True,
             reward_clip=True,
@@ -215,6 +234,8 @@ def make_env(cfg: DictConfig) -> EnvSetup[Env]:
         return _make_mjx_env(cfg)
     elif cfg.env.type == "gymnax":
         return _make_gymnax_env(cfg)
+    elif cfg.env.type == "minatar":
+        return _make_minatar_env(cfg)
     elif cfg.env.type == "gymnasium":
         return _make_gymnasium_env(cfg)
     elif cfg.env.type == "atari":

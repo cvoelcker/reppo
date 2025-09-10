@@ -1,0 +1,21 @@
+defaults:
+  - algorithm: reppo
+  - env: minatar
+  - logging: wandb_offline
+  - runner: gymnax
+  - _self_
+
+algorithm:
+  max_episode_steps: ${env.max_episode_steps[${env.name}]}
+  network:
+    _target_: src.algorithms.reppo.networks.make_minatar_networks
+    _partial_: true
+
+seed: 0
+name: "reppo"
+tags: []
+hydra:
+  job:
+    chdir: True
+  searchpath:
+    - file://config

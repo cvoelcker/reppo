@@ -5,92 +5,37 @@ from typing import Callable
 import hydra
 import jax
 import optax
-from flax import nnx, struct
-from flax.struct import PyTreeNode
+from flax import nnx
 from jax import numpy as jnp
 from omegaconf import DictConfig
-from gymnax.environments.spaces import Space, Box
-from src.algorithms.reppo.networks import Actor, Critic
+from gymnax.environments.spaces import Space, Box, Discrete
+from src.algorithms.reppo.common import REPPOTrainState
 from src.common import (
     InitFn,
     Key,
+    LearnerFn,
     Policy,
-    TrainState,
     Transition,
 )
 from src.normalization import Normalizer
 from src.algorithms import utils
 import distrax
 
-logging.basicConfig(level=logging.INFO)
 
-
-class ReppoConfig(struct.PyTreeNode):
-    lr: float
-    gamma: float
-    total_time_steps: int
-    num_steps: int
-    lmbda: float
-    lmbda_min: float
-    num_mini_batches: int
-    num_envs: int
-    num_epochs: int
-    max_grad_norm: float | None
-    normalize_env: bool
-    polyak: float
-    exploration_noise_min: float
-    exploration_noise_max: float
-    exploration_base_envs: int
-    ent_start: float
-    ent_target_mult: float
-    kl_start: float
-    eval_interval: int = 10
-    num_eval: int = 25
-    max_episode_steps: int = 1000
-    critic_hidden_dim: int = 512
-    actor_hidden_dim: int = 512
-    vmin: int = -100
-    vmax: int = 100
-    num_bins: int = 250
-    hl_gauss: bool = False
-    kl_bound: float = 1.0
-    aux_loss_mult: float = 0.0
-    update_kl_lagrangian: bool = True
-    update_entropy_lagrangian: bool = True
-    use_critic_norm: bool = True
-    num_critic_encoder_layers: int = 1
-    num_critic_head_layers: int = 1
-    num_critic_pred_layers: int = 1
-    use_simplical_embedding: bool = False
-    use_critic_skip: bool = False
-    use_actor_norm: bool = True
-    num_actor_layers: int = 2
-    actor_min_std: float = 0.05
-    use_actor_skip: bool = False
-    reduce_kl: bool = True
-    reverse_kl: bool = False
-    anneal_lr: bool = False
-    actor_kl_clip_mode: str = "clipped"
-    action_size_target: float = 0
-    reward_scale: float = 1.0
-
-
-class REPPOTrainState(TrainState):
-    critic: nnx.TrainState
-    actor: nnx.TrainState
-    actor_target: nnx.TrainState
-    normalization_state: PyTreeNode | None = None
-
-
-def create_exploration_offset(cfg: ReppoConfig) -> jax.Array:
+def create_exploration_offset(
+    num_envs: int,
+    exploration_base_envs: int,
+    noise_min: float,
+    noise_max: float,
+) -> jax.Array:
     offset = (
-        jnp.arange(cfg.num_envs - cfg.exploration_base_envs)[:, None]
-        * (cfg.exploration_noise_max - cfg.exploration_noise_min)
-        / (cfg.num_envs - cfg.exploration_base_envs)
-    ) + cfg.exploration_noise_min
+        jnp.arange(num_envs - exploration_base_envs)[:, None]
+        * (noise_max - noise_min)
+        / (num_envs - exploration_base_envs)
+    ) + noise_min
     offset = jnp.concatenate(
         [
-            jnp.ones((cfg.exploration_base_envs, 1)) * cfg.exploration_noise_min,
+            jnp.ones((exploration_base_envs, 1)) * noise_min,
             offset,
         ],
         axis=0,
@@ -99,11 +44,16 @@ def create_exploration_offset(cfg: ReppoConfig) -> jax.Array:
     return offset
 
 
-def make_default_reppo_policy_fn(
-    cfg: DictConfig, action_space: Space
+def make_policy_fn(
+    cfg: DictConfig, observation_space: Space, action_space: Space
 ) -> Callable[[REPPOTrainState, bool], Policy]:
-    cfg = ReppoConfig(**cfg.algorithm)
-    offset = create_exploration_offset(cfg)
+    cfg = cfg.algorithm
+    offset = create_exploration_offset(
+        num_envs=cfg.num_envs,
+        exploration_base_envs=cfg.exploration_base_envs,
+        noise_min=cfg.exploration_noise_min,
+        noise_max=cfg.exploration_noise_max,
+    )
 
     def policy_fn(train_state: REPPOTrainState, eval: bool) -> Policy:
         normalizer = Normalizer()
@@ -124,17 +74,17 @@ def make_default_reppo_policy_fn(
 
             return action, {}
 
-        return policy
+        return jax.jit(policy)
 
     return policy_fn
 
 
-def make_default_init_fn(
+def make_init_fn(
     cfg: DictConfig,
     observation_space: Space,
     action_space: Space,
 ) -> InitFn:
-    hparams = ReppoConfig(**cfg.algorithm)
+    hparams = cfg.algorithm
 
     def init(key: Key):
         key, model_key = jax.random.split(key)
@@ -167,32 +117,11 @@ def make_default_init_fn(
         else:
             norm_state = None
 
-        if cfg.env.get("asymmetric_observation", False):
-            q_observation_space = observation_space.spaces["privileged_state"]
-            actor_observation_space = observation_space.spaces["state"]
-        else:
-            q_observation_space = observation_space
-            actor_observation_space = observation_space
-
-        q_network = hydra.utils.instantiate(cfg.networks.critic)(
+        actor, critic = hydra.utils.call(cfg.algorithm.network)(
+            cfg=cfg,
             action_space=action_space,
-            observation_space=q_observation_space,
+            observation_space=observation_space,
             rngs=rngs,
-        )
-
-        actor_network = hydra.utils.instantiate(cfg.networks.actor)(
-            action_space=action_space,
-            observation_space=actor_observation_space,
-            rngs=rngs,
-        )
-
-        actor = Actor(
-            actor_network=actor_network,
-            asymmetric_obs=cfg.env.get("asymmetric_observation", False),
-        )
-        critic = Critic(
-            q_network=q_network,
-            asymmetric_obs=cfg.env.get("asymmetric_observation", False),
         )
 
         return REPPOTrainState.create(
@@ -220,9 +149,12 @@ def make_default_init_fn(
     return init
 
 
-def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
+def make_learner_fn(
+    cfg: DictConfig, observation_space: Space, action_space: Space
+) -> LearnerFn:
     normalizer = Normalizer()
-    cfg = ReppoConfig(**cfg.algorithm)
+    hparams = cfg.algorithm
+    discrete_actions = isinstance(action_space, Discrete)
 
     def critic_loss_fn(
         params: nnx.Param, train_state: REPPOTrainState, minibatch: Transition
@@ -232,9 +164,9 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
 
         target_values = minibatch.extras["target_values"]
 
-        if cfg.hl_gauss:
+        if hparams.hl_gauss:
             target_cat = jax.vmap(utils.hl_gauss, in_axes=(0, None, None, None))(
-                target_values, cfg.num_bins, cfg.vmin, cfg.vmax
+                target_values, hparams.num_bins, hparams.vmin, hparams.vmax
             )
             critic_pred = critic_output["logits"]
             critic_update_loss = optax.softmax_cross_entropy(critic_pred, target_cat)
@@ -265,7 +197,7 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
         critic_loss = jnp.mean(critic_loss)
         loss = jnp.mean(
             (1.0 - minibatch.truncated)
-            * (critic_update_loss + cfg.aux_loss_mult * aux_loss)
+            * (critic_update_loss + hparams.aux_loss_mult * aux_loss)
         )
         return loss, dict(
             value_loss=critic_loss,
@@ -301,7 +233,7 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
             value = critic_pred["value"]
             actor_loss = jnp.sum(pi.probs * ((alpha * pi.logits) - value), axis=-1)
             entropy = pi.entropy()
-            action_size_target = cfg.ent_target_mult
+            action_size_target = hparams.ent_target_mult
         else:
             pred_action, log_prob = pi.sample_and_log_prob(
                 seed=minibatch.extras["action_key"]
@@ -310,26 +242,26 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
             value = critic_pred["value"]
             actor_loss = log_prob * alpha - value
             entropy = -log_prob
-            action_size_target = pred_action.shape[-1] * cfg.ent_target_mult
+            action_size_target = pred_action.shape[-1] * hparams.ent_target_mult
 
         lagrangian = actor_model.lagrangian()
 
-        if cfg.actor_kl_clip_mode == "full":
+        if hparams.actor_kl_clip_mode == "full":
             loss = jnp.mean(
-                actor_loss + kl * jax.lax.stop_gradient(lagrangian) * cfg.reduce_kl
+                actor_loss + kl * jax.lax.stop_gradient(lagrangian) * hparams.reduce_kl
             )
-        elif cfg.actor_kl_clip_mode == "clipped":
+        elif hparams.actor_kl_clip_mode == "clipped":
             loss = jnp.mean(
                 jnp.where(
-                    kl < cfg.kl_bound,
+                    kl < hparams.kl_bound,
                     actor_loss,
-                    kl * jax.lax.stop_gradient(lagrangian) * cfg.reduce_kl,
+                    kl * jax.lax.stop_gradient(lagrangian) * hparams.reduce_kl,
                 )
             )
-        elif cfg.actor_kl_clip_mode == "value":
+        elif hparams.actor_kl_clip_mode == "value":
             loss = jnp.mean(actor_loss)
         else:
-            raise ValueError(f"Unknown actor loss mode: {cfg.actor_kl_clip_mode}")
+            raise ValueError(f"Unknown actor loss mode: {hparams.actor_kl_clip_mode}")
 
         # SAC target entropy loss
 
@@ -339,12 +271,12 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
         )
 
         # Lagrangian constraint (follows temperature update)
-        lagrangian_loss = -lagrangian * jax.lax.stop_gradient(kl - cfg.kl_bound)
+        lagrangian_loss = -lagrangian * jax.lax.stop_gradient(kl - hparams.kl_bound)
 
         # total loss
-        if cfg.update_entropy_lagrangian:
+        if hparams.update_entropy_lagrangian:
             loss += jnp.mean(target_entropy_loss)
-        if cfg.update_kl_lagrangian:
+        if hparams.update_kl_lagrangian:
             loss += jnp.mean(lagrangian_loss)
 
         return loss, dict(
@@ -367,7 +299,7 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
     def compute_policy_kl(
         minibatch: Transition, pi: distrax.Distribution, old_pi: distrax.Distribution
     ) -> jax.Array:
-        if cfg.reverse_kl:
+        if hparams.reverse_kl:
             if discrete_actions:
                 kl = pi.kl_divergence(old_pi)
             else:
@@ -420,18 +352,18 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
         # Shuffle data and split into mini-batches
         key, shuffle_key, act_key, kl_key = jax.random.split(key, 4)
         mini_batch_size = (
-            math.floor(cfg.num_steps * cfg.num_envs) // cfg.num_mini_batches
+            math.floor(hparams.num_steps * hparams.num_envs) // hparams.num_mini_batches
         )
-        indices = jax.random.permutation(shuffle_key, cfg.num_steps * cfg.num_envs)
+        indices = jax.random.permutation(shuffle_key, hparams.num_steps * hparams.num_envs)
         minibatch_idxs = jax.tree.map(
-            lambda x: x.reshape((cfg.num_mini_batches, mini_batch_size, *x.shape[1:])),
+            lambda x: x.reshape((hparams.num_mini_batches, mini_batch_size, *x.shape[1:])),
             indices,
         )
         minibatches = jax.tree.map(lambda x: jnp.take(x, minibatch_idxs, axis=0), batch)
         minibatches.extras["action_key"] = jax.random.split(
-            act_key, cfg.num_mini_batches
+            act_key, hparams.num_mini_batches
         )
-        minibatches.extras["kl_key"] = jax.random.split(kl_key, cfg.num_mini_batches)
+        minibatches.extras["kl_key"] = jax.random.split(kl_key, hparams.num_mini_batches)
 
         # Run model update for each mini-batch
         train_state, metrics = jax.lax.scan(update, train_state, minibatches)
@@ -448,10 +380,10 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
             reward = transition.extras["soft_reward"]
             value = transition.extras["value"]
             lambda_sum = (
-                jnp.exp(importance_weight) * cfg.lmbda * lambda_return
-                + (1 - jnp.exp(importance_weight) * cfg.lmbda) * value
+                jnp.exp(importance_weight) * hparams.lmbda * lambda_return
+                + (1 - jnp.exp(importance_weight) * hparams.lmbda) * value
             )
-            delta = cfg.gamma * jnp.where(truncated, value, (1.0 - done) * lambda_sum)
+            delta = hparams.gamma * jnp.where(truncated, value, (1.0 - done) * lambda_sum)
             lambda_return = reward + delta
             truncated = transition.truncated
             return (
@@ -473,10 +405,15 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
         return target_values
 
     def compute_extras(key: Key, train_state: REPPOTrainState, batch: Transition):
-        offset = create_exploration_offset(cfg=cfg)
+        offset = create_exploration_offset(
+            num_envs=hparams.num_envs,
+            exploration_base_envs=hparams.exploration_base_envs,
+            noise_min=hparams.exploration_noise_min,
+            noise_max=hparams.exploration_noise_max,
+        )
 
         last_obs = train_state.last_obs
-        if cfg.normalize_env:
+        if hparams.normalize_env:
             last_obs = normalizer.normalize(train_state.normalization_state, last_obs)
 
         actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
@@ -499,19 +436,19 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
         next_log_prob = jnp.concatenate([log_probs[1:], last_log_prob[None]], axis=0)
 
         soft_reward = (
-            batch.reward - cfg.gamma * next_log_prob * actor_model.temperature()
+            batch.reward - hparams.gamma * next_log_prob * actor_model.temperature()
         )
 
         raw_importance_weight = jnp.nan_to_num(
             og_pi.log_prob(batch.action) - pi.log_prob(batch.action),
-            nan=jnp.log(cfg.lmbda_min),
+            nan=jnp.log(hparams.lmbda_min),
         )
         importance_weight = jnp.clip(
-            raw_importance_weight, min=jnp.log(cfg.lmbda_min), max=jnp.log(1.0)
+            raw_importance_weight, min=jnp.log(hparams.lmbda_min), max=jnp.log(1.0)
         )
 
         extras = {
-            "soft_reward": soft_reward * cfg.reward_scale,
+            "soft_reward": soft_reward * cfg.env.get("reward_scaling", 1.0),
             "value": jnp.concatenate([value[1:], last_value[None]], axis=0),
             "next_emb": jnp.concatenate([emb[1:], last_emb[None]], axis=0),
             "importance_weight": importance_weight,
@@ -521,7 +458,7 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
     def learner_fn(
         key: Key, train_state: REPPOTrainState, batch: Transition
     ) -> tuple[REPPOTrainState, dict[str, jax.Array]]:
-        if cfg.normalize_env:
+        if hparams.normalize_env:
             new_norm_state = normalizer.update(
                 train_state.normalization_state, batch.obs
             )
@@ -540,7 +477,7 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
         # Reshape data to (num_steps * num_envs, ...)
 
         batch = jax.tree.map(
-            lambda x: x.reshape((cfg.num_steps * cfg.num_envs, *x.shape[2:])), batch
+            lambda x: x.reshape((hparams.num_steps * hparams.num_envs, *x.shape[2:])), batch
         )
         train_state = train_state.replace(
             actor_target=train_state.actor_target.replace(
@@ -552,10 +489,10 @@ def make_default_learner_fn(cfg: DictConfig, discrete_actions: bool = False):
         train_state, update_metrics = jax.lax.scan(
             f=lambda train_state, key: run_epoch(key, train_state, batch),
             init=train_state,
-            xs=jax.random.split(train_key, cfg.num_epochs),
+            xs=jax.random.split(train_key, hparams.num_epochs),
         )
         # Get metrics from the last epoch
         update_metrics = jax.tree.map(lambda x: x[-1], update_metrics)
         return train_state, update_metrics
 
-    return learner_fn
+    return jax.jit(learner_fn)

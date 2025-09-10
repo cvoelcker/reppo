@@ -60,3 +60,16 @@ ent_target_mult: 0.5
 update_entropy_lagrangian: true
 ## auxiliary loss settings
 aux_loss_mult: 1.0
+
+network:
+  _target_: src.algorithms.reppo.networks.make_continuous_ff_networks
+  _partial_: true
+init:
+  _target_: src.algorithms.reppo.ff_reppo.make_init_fn
+  _partial_: true
+learner:
+  _target_: src.algorithms.reppo.ff_reppo.make_learner_fn
+  _partial_: true
+policy:
+  _target_: src.algorithms.reppo.ff_reppo.make_policy_fn
+  _partial_: true

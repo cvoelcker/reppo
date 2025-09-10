@@ -1,3 +1,5 @@
+import logging
+import gymnasium
 from gymnax.environments.environment import Environment
 import jax
 from src.common import (
@@ -18,7 +20,7 @@ from src.algorithms import utils
 import jax.numpy as jnp
 
 
-def make_train_fn(
+def make_scan_train_fn(
     env: Environment | tuple[Environment, Environment],
     total_time_steps: int,
     num_steps: int,
@@ -33,6 +35,11 @@ def make_train_fn(
     rollout_fn: RolloutFn | None = None,
     log_callback: LogCallback | None = None,
 ) -> TrainFn:
+    from src.runners.gymnax_runner import (
+        make_eval_fn as make_gymnax_eval_fn,
+        make_rollout_fn as make_gymnax_rollout_fn,
+    )
+
     # Initialize the environment and wrap it to admit vectorized behavior.
     if isinstance(env, tuple):
         env, eval_env = env
@@ -42,10 +49,13 @@ def make_train_fn(
     eval_interval = int((total_time_steps / (num_steps * num_envs)) // num_eval)
 
     if eval_fn is None:
-        eval_fn = make_eval_fn(eval_env, max_episode_steps)
+        eval_fn = make_gymnax_eval_fn(eval_env, max_episode_steps)
 
     if rollout_fn is None:
-        rollout_fn = make_rollout_fn(env, num_steps=num_steps, num_envs=num_envs)
+        rollout_fn = make_gymnax_rollout_fn(env, num_steps=num_steps, num_envs=num_envs)
+
+    if log_callback is None:
+        log_callback = lambda state, metrics: None
 
     def train_step(
         state: TrainState, key: Key
@@ -114,100 +124,76 @@ def make_train_fn(
         state, metrics = jax.lax.scan(f=train_eval_loop_body, init=train_state, xs=keys)
         return state, metrics
 
-    return scan_train_fn
+    return jax.jit(scan_train_fn)
 
 
-def make_eval_fn(env: Environment, max_episode_steps: int) -> EvalFn:
-    def evaluation_fn(key: Key, policy: Policy):
-        def step_env(carry, _):
-            key, env_state, obs = carry
-            key, act_key, env_key = jax.random.split(key, 3)
-            action, _ = policy(act_key, obs)
-            env_key = jax.random.split(env_key, env.num_envs)
-            obs, env_state, reward, done, info = env.step(env_key, env_state, action)
-            return (key, env_state, obs), info
+def make_loop_train_fn(
+    env: gymnasium.Env | tuple[gymnasium.Env, gymnasium.Env],
+    total_time_steps: int,
+    num_steps: int,
+    num_envs: int,
+    num_eval: int,
+    max_episode_steps: int,
+    init_fn: InitFn,
+    policy_fn: PolicyFn,
+    learner_fn: LearnerFn,
+    rollout_fn: RolloutFn | None = None,
+    eval_fn: EvalFn | None = None,
+    log_callback: LogCallback | None = None,
+):
+    from src.runners.gymnasium_runner import (
+        make_eval_fn as make_gymnasium_eval_fn,
+        make_rollout_fn as make_gymnasium_rollout_fn,
+    )
 
+    if isinstance(env, tuple):
+        env, eval_env = env
+    else:
+        eval_env = env
+
+    if rollout_fn is None:
+        rollout_fn = make_gymnasium_rollout_fn(env, num_steps, num_envs)
+
+    if eval_fn is None:
+        eval_fn = make_gymnasium_eval_fn(eval_env, max_episode_steps)
+
+    def loop_train_fn(key: Key) -> tuple[TrainState, dict]:
+        # Initialize the policy, environment and map that across the number of random seeds
+        num_train_steps = total_time_steps // (num_steps * num_envs)
+        num_iterations = num_eval
+        train_steps_per_iteration = num_train_steps // num_iterations
         key, init_key = jax.random.split(key)
-        init_key = jax.random.split(init_key, env.num_envs)
-        obs, env_state = env.reset(init_key)
-        _, infos = jax.lax.scan(
-            f=step_env,
-            init=(key, env_state, obs),
-            xs=None,
-            length=max_episode_steps,
+        state = init_fn(init_key)
+        obs, _ = env.reset()
+        state = state.replace(
+            last_obs=jax.tree.map(jnp.array, obs), last_env_state=None
         )
+        logging.info(f"Starting training for {num_iterations} iterations.")
+        logging.info(f"Train steps per iteration: {train_steps_per_iteration}.")
+        logging.info(f"Total time steps: {total_time_steps}.")
 
-        return {
-            "episode_return": infos["returned_episode_returns"].mean(
-                where=infos["returned_episode"]
-            ),
-            "episode_return_std": infos["returned_episode_returns"].std(
-                where=infos["returned_episode"]
-            ),
-            "episode_length": infos["returned_episode_lengths"].mean(
-                where=infos["returned_episode"]
-            ),
-            "episode_length_std": infos["returned_episode_lengths"].std(
-                where=infos["returned_episode"]
-            ),
-            "num_episodes": infos["returned_episode"].sum(),
-        }
+        for i in range(num_iterations):
+            for _ in range(train_steps_per_iteration):
+                key, rollout_key, learn_key = jax.random.split(key, 3)
+                # Collect trajectories from `state`
+                policy = policy_fn(state, False)
+                transitions, state = rollout_fn(
+                    key=rollout_key, train_state=state, policy=policy
+                )
+                # Execute an update to the policy with `transitions`
+                state, train_metrics = learner_fn(
+                    key=learn_key, train_state=state, batch=transitions
+                )
+            policy = policy_fn(state, True)
+            key, eval_key = jax.random.split(key)
+            eval_metrics = eval_fn(eval_key, policy)
+            metrics = {
+                "time_step": state.time_steps,
+                **utils.prefix_dict("train", train_metrics),
+                **utils.prefix_dict("eval", eval_metrics),
+            }
+            state = state.replace(iteration=state.iteration + 1)
+            log_callback(state, metrics)
+        return state, metrics
 
-    return evaluation_fn
-
-
-def make_rollout_fn(env: Environment, num_steps: int, num_envs: int) -> RolloutFn:
-    def collect_rollout(
-        key: Key, train_state: TrainState, policy: Policy
-    ) -> tuple[Transition, TrainState]:
-        # Take a step in the environment
-        def step_env(carry, _) -> tuple[tuple, Transition]:
-            key, env_state, train_state, obs = carry
-
-            # Select action
-            key, act_key, step_key = jax.random.split(key, 3)
-            action, _ = policy(act_key, obs)
-            # Take a step in the environment
-            step_key = jax.random.split(step_key, num_envs)
-            next_obs, next_env_state, reward, done, info = env.step(
-                step_key, env_state, action
-            )
-            # Record the transition
-            transition = Transition(
-                obs=obs,
-                action=action,
-                reward=reward,
-                done=done,
-                truncated=next_env_state.truncated,
-                extras=info,
-            )
-            return (
-                key,
-                next_env_state,
-                train_state,
-                next_obs,
-            ), transition
-
-        # Collect rollout via lax.scan taking steps in the environment
-        rollout_state, transitions = jax.lax.scan(
-            f=step_env,
-            init=(
-                key,
-                train_state.last_env_state,
-                train_state,
-                train_state.last_obs,
-            ),
-            length=num_steps,
-        )
-        # Aggregate the transitions across all the environments to reset for the next iteration
-        _, last_env_state, train_state, last_obs = rollout_state
-
-        train_state = train_state.replace(
-            last_env_state=last_env_state,
-            last_obs=last_obs,
-            time_steps=train_state.time_steps + num_steps * num_envs,
-        )
-
-        return transitions, train_state
-
-    return collect_rollout
+    return loop_train_fn

@@ -9,6 +9,7 @@ import optax
 from flax import nnx, struct
 from jax import numpy as jnp
 from omegaconf import DictConfig
+from gymnax.environments.spaces import Space
 
 from src.common import (
     InitFn,
@@ -27,10 +28,9 @@ class PPOTrainState(TrainState):
     normalization_state: NormalizationState | None = None
 
 
-def make_ppo_init_fn(
-    cfg: DictConfig, observation_space: gymnasium.Space, action_space: gymnasium.Space
+def make_init_fn(
+    cfg: DictConfig, observation_space: Space, action_space: Space
 ) -> InitFn:
-    network_cfg = cfg.networks
     algo_cfg = cfg.algorithm
 
     def init(key: Key) -> PPOTrainState:
@@ -48,7 +48,7 @@ def make_ppo_init_fn(
         )
         key, model_key = jax.random.split(key)
         # Intialize the model
-        networks = hydra.utils.instantiate(network_cfg)(
+        networks = hydra.utils.instantiate(cfg.algorithm.network)(
             obs_space=observation_space,
             action_space=action_space,
             rngs=nnx.Rngs(model_key),
@@ -99,7 +99,9 @@ def make_ppo_init_fn(
     return init
 
 
-def make_ppo_learner_fn(cfg: DictConfig) -> LearnerFn:
+def make_learner_fn(
+    cfg: DictConfig, observation_space: Space, action_space: Space
+) -> LearnerFn:
     algo_cfg = cfg.algorithm
     normalizer = Normalizer()
 
@@ -131,7 +133,8 @@ def make_ppo_learner_fn(cfg: DictConfig) -> LearnerFn:
             ratio = jnp.exp(log_diff)
             r1 = ratio - 1.0
             drift1 = jax.nn.relu(
-                r1 * advantages - algo_cfg.alpha * jax.nn.tanh(r1 * advantages / algo_cfg.alpha)
+                r1 * advantages
+                - algo_cfg.alpha * jax.nn.tanh(r1 * advantages / algo_cfg.alpha)
             )
             drift2 = jax.nn.relu(
                 log_diff * advantages
@@ -304,19 +307,24 @@ def make_ppo_learner_fn(cfg: DictConfig) -> LearnerFn:
     return jax.jit(learner_fn)
 
 
-def ppo_policy_fn(train_state: PPOTrainState, eval_mode: bool) -> Policy:
-    normalizer = Normalizer()
+def make_policy_fn(
+    cfg: DictConfig, observation_space: Space, action_space: Space
+) -> Policy:
+    def policy_fn(train_state: PPOTrainState, eval_mode: bool) -> Policy:
+        normalizer = Normalizer()
 
-    def policy(
-        key: Key, obs: jax.Array, state: struct.PyTreeNode | None = None
-    ) -> tuple[jax.Array, dict[str, jax.Array]]:
-        if train_state.normalization_state is not None:
-            obs = normalizer.normalize(train_state.normalization_state, obs)
-        model = nnx.merge(train_state.graphdef, train_state.params)
-        pi = model.actor(obs)
-        value = model.critic(obs)
-        action = pi.sample(seed=key)
-        log_prob = pi.log_prob(action)
-        return action, dict(log_prob=log_prob, value=value)
+        def policy(
+            key: Key, obs: jax.Array, state: struct.PyTreeNode | None = None
+        ) -> tuple[jax.Array, dict[str, jax.Array]]:
+            if train_state.normalization_state is not None:
+                obs = normalizer.normalize(train_state.normalization_state, obs)
+            model = nnx.merge(train_state.graphdef, train_state.params)
+            pi = model.actor(obs)
+            value = model.critic(obs)
+            action = pi.sample(seed=key)
+            log_prob = pi.log_prob(action)
+            return action, dict(log_prob=log_prob, value=value)
 
-    return policy
+        return jax.jit(policy)
+
+    return policy_fn

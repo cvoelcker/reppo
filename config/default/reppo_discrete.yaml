@@ -1,14 +1,18 @@
 defaults:
   - algorithm: reppo
-  - env: mjx_dmc
-  - networks: reppo_continuous
+  - env: gymnax
   - logging: wandb_offline
   - runner: gymnax
   - _self_
-  
+
+algorithm:
+  network:
+    _target_: src.algorithms.reppo.networks.make_discrete_ff_networks
+    _partial_: true
+    
 seed: 0
 name: "reppo"
-tags: ["reppo", "mujoco_playground"]
+tags: []
 hydra:
   job:
     chdir: True

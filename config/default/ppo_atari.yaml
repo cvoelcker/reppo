@@ -1,0 +1,45 @@
+defaults:
+  - algorithm: ppo
+  - env: atari
+  - logging: wandb_offline
+  - runner: gymnasium
+  - _self_
+
+algorithm:
+  total_time_steps: 10_000_000
+  lr: 2.5e-4
+  gamma: 0.99
+  lmbda: 0.95
+  clip_ratio: 0.1
+  value_coef: 0.5
+  entropy_coef: 0.01
+  num_steps: 128
+  num_mini_batches: 4
+  num_envs: 8
+  num_epochs: 4
+  max_grad_norm: 0.5
+  normalize_advantages: True
+  normalize_env: False
+  anneal_lr: True
+  num_eval: 100
+  max_episode_steps: 27000
+  hidden_dim: 512
+  network:
+    _target_: src.algorithms.ppo.networks.PPOAtariNetworks
+    _partial_: true
+
+runner:
+  eval_fn:
+    _target_: src.runners.atari_runner.make_eval_fn
+    _partial_: true
+    max_episode_steps: ${algorithm.max_episode_steps}
+    max_eval_episodes: 128
+
+seed: 0
+name: "ppo"
+tags: []
+hydra:
+  job:
+    chdir: True
+  searchpath:
+    - file://config

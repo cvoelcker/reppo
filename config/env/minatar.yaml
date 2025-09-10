@@ -1,0 +1,11 @@
+type: minatar
+name: Freeway-MinAtar
+vmin: 0
+vmax: 50
+
+max_episode_steps:
+  Freeway-MinAtar: 2500
+  Asterix-MinAtar: 1000
+  Breakout-MinAtar: 1000
+  Seaquest-MinAtar: 1000
+  SpaceInvaders-MinAtar: 1000

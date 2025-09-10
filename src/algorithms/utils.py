@@ -6,6 +6,7 @@ import gymnax
 import jax
 import jax.numpy as jnp
 from mujoco_playground import State
+import numpy as np
 from omegaconf import DictConfig
 import wandb
 
@@ -148,20 +149,28 @@ def simplical_softmax_cross_entropy(pred, target, dim=8):
 
 def make_log_callback():
     metric_history = []
+    times = [time.perf_counter()]
+    steps = [0]
 
     def log_callback(state, metrics):
-        if state.time_steps.ndim > 0:
-            state = state.replace(time_steps=state.time_steps[0])
-            metrics["time_step"] = state.time_steps
-
-        metrics["sys_time"] = time.perf_counter()
-        if len(metric_history) > 0:
-            num_env_steps = state.time_steps - metric_history[-1]["time_step"]
-            seconds = metrics["sys_time"] - metric_history[-1]["sys_time"]
-            sps = num_env_steps / seconds
+        time_steps = np.array(state.time_steps)
+        if time_steps.ndim > 0:
+            state = state.replace(time_steps=time_steps[0])
+            metrics["sys/time_step"] = time_steps
         else:
-            sps = 0
+            metrics["sys/time_step"] = time_steps
 
+        metrics["sys/time"] = time.perf_counter()
+        num_env_steps = state.time_steps - steps[-1]
+        seconds = metrics["sys/time"] - times[-1]
+        sps = num_env_steps / seconds
+        duration = metrics["sys/time"] - times[0]
+        steps.append(state.time_steps)
+        times.append(metrics["sys/time"])
+        metrics["sys/wall_time"] = duration
+        metrics["sys/sps"] = sps
+        metrics.pop("time_step", None)
+        metrics = jax.tree.map(jnp.array, metrics)
         metric_history.append(metrics)
         episode_return = metrics["eval/episode_return"].mean()
         # Use pop() with a default value of None in case 'advantages' key doesn't exist
@@ -183,7 +192,6 @@ def make_log_callback():
             else:
                 log_strs.append(f"  {k}={metrics[k]:.3f}")
            
-        log_strs.append(f"sps={sps:.2f}")
         logging.info(
             "\n" + "\n".join(log_strs)
         )

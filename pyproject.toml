@@ -3,7 +3,7 @@ name = "reppo"
 version = "0.1.0"
 description = "Code release for the 'Relative Entropy Pathwise Policy Optimization'."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 dependencies = [
     "black>=25.1.0",
     "brax>=0.12.1",
@@ -35,6 +35,8 @@ dependencies = [
     "debugpy>=1.8.14",
     "jax[cuda12]==0.5.0",
     # "pufferlib[atari]>=3.0.0",
+    "envpool>=0.8.4",
+    "mani-skill>=3.0.0b21",
 ]
 
 [build-system]

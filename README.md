@@ -39,13 +39,13 @@ pip install -e .
 The main code for the algorithm is in `src/algorithms/reppo`.
 Our configurations are handled with [hydra.cc](https://hydra.cc/). This means parameters can be overwritten by using the syntax
 ```bash
-python src/algorithms/reppo/train_reppo.py PARAMETER_NAME=VALUE
+python src/train.py PARAMETER_NAME=VALUE
 ```
 
 Algorithms are independent of the environment, and can be run with either [gymnax](https://github.com/google/gymnax) or [gymnasium](https://github.com/Farama-Foundation/Gymnasium) style environments.
 To launch a training run, use the following command:
 ```bash
-python src/algorithms/reppo/train_reppo.py --config-name ff_playground.yaml env.name=CartpoleBalance
+python src/train.py --config-name reppo_continuous.yaml env.name=CartpoleBalance
 ```
 
 Algorithm configurations have the following structure:
@@ -54,17 +54,15 @@ config/
   algorithm/
   runner/
   env/
-  networks/
   logging/
 ```
-The `algorithm` folder contains the core algorithm hyperparameters, such as learning rates, batch sizes, etc.
-The `runner` folder contains the environment interaction configurations, such as the type of rollout collection logic, number of steps per rollout, etc.
+The `algorithm` folder contains the core algorithm hyperparameters, such as learning rates, batch sizes, etc. and components such as the initialization and update logic.
+The `runner` folder contains the environment interaction configurations, such as the type of rollout collection and evaluation logic.
 The `env` folder contains environment specific parameters, such as the environment name and framework.
-The `networks` folder contains the neural network architectures. For instance, we provide configurations for continuous and discrete action spaces with feedforward networks for REPPO (`reppo_continuous`, `reppo_discrete`).
 The `logging` folder contains logging configurations, such as whether to log to wandb.
 For instance, to run REPPO on the gymnasium discrete action Cartpole-v1 environment, you can use the following command:
 ```bash
-python src/algorithms/reppo/train_reppo.py algorithm=reppo runner=gymnasium env=gymnasium env.name=CartPole-v1 networks=reppo_discrete
+python src/train.py --config-name=reppo_discrete runner=gymnasium env=gymnasium env.name=CartPole-v1
 ```
 
 Default configurations for an algorithm can be found in `config/default/ALGORITHM_NAME`.
