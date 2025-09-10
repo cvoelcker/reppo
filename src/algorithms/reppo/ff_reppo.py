@@ -157,6 +157,7 @@ def make_learner_fn(
     normalizer = Normalizer()
     hparams = cfg.algorithm
     discrete_actions = isinstance(action_space, Discrete)
+    d = action_space.shape[0] if not discrete_actions else action_space.n
 
     def critic_loss_fn(
         params: nnx.Param, train_state: REPPOTrainState, minibatch: Transition
@@ -245,9 +246,9 @@ def make_learner_fn(
             actor_loss = log_prob * alpha - value
             entropy = -log_prob
             action_size_target = pred_action.shape[-1] * hparams.ent_target_mult
-            if cfg.use_score_based_gradient:
+            if hparams.use_score_based_gradient:
                 pred_action, log_prob = pi.sample_and_log_prob(
-                    seed=minibatch.extras["action_key"], sample_shape=(4 * actor_model.d,)  # WARNING: magic number
+                    seed=minibatch.extras["action_key"], sample_shape=(4 * d,)  # WARNING: magic number
                 )
                 obs = jnp.repeat(minibatch.obs[None, ...], pred_action.shape[0], axis=0)
                 critic_pred = critic_target_model(obs, pred_action)
@@ -263,7 +264,7 @@ def make_learner_fn(
                 value = critic_pred["value"]
                 actor_loss = log_prob * alpha - value
                 entropy = -log_prob
-            action_size_target = pred_action.shape[-1] * cfg.ent_target_mult
+            action_size_target = pred_action.shape[-1] * hparams.ent_target_mult
 
         lagrangian = actor_model.lagrangian()
 
