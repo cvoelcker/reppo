@@ -63,6 +63,7 @@ class Actor(nnx.Module):
         policy_head: nnx.Module,
         kl_start: float = 0.1,
         ent_start: float = 0.1,
+        d: int = 0,
         asymmetric_obs: bool = False,
     ):
         self.feature_encoder = feature_encoder
@@ -70,6 +71,7 @@ class Actor(nnx.Module):
         self.asymmetric_obs = asymmetric_obs
         self.log_lagrangian = nnx.Param(jnp.ones(1) * math.log(kl_start))
         self.log_temperature = nnx.Param(jnp.ones(1) * math.log(ent_start))
+        self.d = d
 
     def __call__(self, obs: jax.Array, scale: jax.Array = 1.0) -> distrax.Distribution:
         if self.asymmetric_obs:
