@@ -1,4 +1,5 @@
 import logging
+import time
 import gymnasium
 from gymnax.environments.environment import Environment
 import jax
@@ -85,7 +86,6 @@ def make_scan_train_fn(
         policy = policy_fn(train_state, True)
         eval_metrics = eval_fn(eval_key, policy)
         metrics = {
-            "time_step": train_state.time_steps,
             **utils.prefix_dict("train", train_metrics),
             **utils.prefix_dict("eval", eval_metrics),
         }
@@ -133,6 +133,7 @@ def make_loop_train_fn(
     num_steps: int,
     num_envs: int,
     num_eval: int,
+    train_log_interval: int,
     max_episode_steps: int,
     init_fn: InitFn,
     policy_fn: PolicyFn,
@@ -171,7 +172,9 @@ def make_loop_train_fn(
         logging.info(f"Starting training for {num_iterations} iterations.")
         logging.info(f"Train steps per iteration: {train_steps_per_iteration}.")
         logging.info(f"Total time steps: {total_time_steps}.")
-
+        
+      
+        step = 0
         for i in range(num_iterations):
             for _ in range(train_steps_per_iteration):
                 key, rollout_key, learn_key = jax.random.split(key, 3)
@@ -184,16 +187,18 @@ def make_loop_train_fn(
                 state, train_metrics = learner_fn(
                     key=learn_key, train_state=state, batch=transitions
                 )
+
+                if step % train_log_interval == 0:
+                    log_callback(state, utils.prefix_dict("train", train_metrics))
+                step += 1
             policy = policy_fn(state, True)
             key, eval_key = jax.random.split(key)
             eval_metrics = eval_fn(eval_key, policy)
-            metrics = {
-                "time_step": state.time_steps,
-                **utils.prefix_dict("train", train_metrics),
-                **utils.prefix_dict("eval", eval_metrics),
-            }
             state = state.replace(iteration=state.iteration + 1)
-            log_callback(state, metrics)
-        return state, metrics
+            log_callback(state, utils.prefix_dict("eval", eval_metrics))
+        return state, {
+            **utils.prefix_dict("train", train_metrics),
+            **utils.prefix_dict("eval", eval_metrics),
+        }
 
     return loop_train_fn

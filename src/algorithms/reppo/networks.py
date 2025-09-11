@@ -36,9 +36,9 @@ class Critic(nnx.Module):
 
     def __call__(self, obs: jax.Array, action: jax.Array = None) -> jax.Array:
         if self.asymmetric_obs:
-            assert (
-                isinstance(obs, dict) and "privileged_state" in obs
-            ), "Privileged state must be provided for asymmetric observations."
+            assert isinstance(obs, dict) and "privileged_state" in obs, (
+                "Privileged state must be provided for asymmetric observations."
+            )
             obs = obs["privileged_state"]
 
         if self.is_discrete:
@@ -73,18 +73,18 @@ class Actor(nnx.Module):
 
     def __call__(self, obs: jax.Array, scale: jax.Array = 1.0) -> distrax.Distribution:
         if self.asymmetric_obs:
-            assert (
-                isinstance(obs, dict) and "state" in obs
-            ), "State must be provided for actor."
+            assert isinstance(obs, dict) and "state" in obs, (
+                "State must be provided for actor."
+            )
             obs = obs["state"]
         features = self.feature_encoder(obs)
         return self.policy_head(features, scale=scale, deterministic=False)
 
     def det_action(self, obs: jax.Array) -> jax.Array:
         if self.asymmetric_obs:
-            assert (
-                isinstance(obs, dict) and "state" in obs
-            ), "State must be provided for actor."
+            assert isinstance(obs, dict) and "state" in obs, (
+                "State must be provided for actor."
+            )
             obs = obs["state"]
         features = self.feature_encoder(obs)
         return self.policy_head(features, deterministic=True)
@@ -418,6 +418,7 @@ def make_minatar_ff_networks(
     )
     return actor, critic
 
+
 def make_atari_ff_networks(
     cfg: DictConfig,
     observation_space: Box,
@@ -429,27 +430,57 @@ def make_atari_ff_networks(
         output_dim=cfg.algorithm.critic_hidden_dim,
         rngs=rngs,
     )
-    actor_encoder = nnx.Sequential(
-        nnx.clone(cnn),
-        nnx.relu,
-        nnx.Linear(
-            in_features=cfg.algorithm.critic_hidden_dim,
-            out_features=action_space.n,
-            rngs=rngs,
+
+    actor = Actor(
+        feature_encoder=nnx.Sequential(
+            cnn,
+            nnx.relu,
+            nnx.Linear(
+                in_features=cfg.algorithm.critic_hidden_dim,
+                out_features=action_space.n,
+                rngs=rngs,
+                kernel_init=nnx.initializers.orthogonal(scale=0.01),
+                bias_init=nnx.initializers.zeros_init(),
+            ),
         ),
+        policy_head=DiscretePolicyHead(),
+        kl_start=cfg.algorithm.kl_start,
+        ent_start=cfg.algorithm.ent_start,
+        asymmetric_obs=False,
     )
-    actor = make_discrete_actor(
-        cfg,
-        observation_space=observation_space,
-        action_space=action_space,
-        encoder=actor_encoder,
-        rngs=rngs,
-    )
-    critic = make_discrete_critic(
-        cfg,
-        observation_space=observation_space,
-        action_space=action_space,
-        encoder=nnx.clone(cnn),
-        rngs=rngs,
+    critic = Critic(
+        feature_encoder=nnx.clone(cnn),
+        q_network=nnx.Sequential(
+            StateActionInput(
+                state_encoder=nnx.Sequential(
+                    nnx.relu,
+                    nnx.Linear(
+                        in_features=cfg.algorithm.critic_hidden_dim,
+                        out_features=cfg.algorithm.num_bins * action_space.n,
+                        kernel_init=nnx.initializers.orthogonal(scale=1.0),
+                        bias_init=nnx.initializers.zeros_init(),
+                        rngs=rngs,
+                    ),
+                ),
+                concatenate=False,
+            ),
+            CategoricalDiscreteQNetworkHead(
+                num_bins=cfg.algorithm.num_bins,
+                vmin=cfg.algorithm.vmin,
+                vmax=cfg.algorithm.vmax,
+            ),
+        ),
+        prediction_network=nnx.Sequential(
+            nnx.relu,
+            nnx.Linear(
+                in_features=cfg.algorithm.critic_hidden_dim,
+                out_features=cfg.algorithm.critic_hidden_dim + 1,
+                kernel_init=nnx.initializers.orthogonal(scale=1.0),
+                bias_init=nnx.initializers.zeros_init(),
+                rngs=rngs,
+            ),
+        ),
+        asymmetric_obs=False,
+        is_discrete=True,
     )
     return actor, critic

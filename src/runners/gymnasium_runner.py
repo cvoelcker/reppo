@@ -1,3 +1,4 @@
+import time
 import gymnasium
 import jax
 import numpy as np
@@ -10,10 +11,10 @@ from src.common import (
     TrainState,
     Transition,
 )
+import wandb
 
-def make_rollout_fn(
-    env: gymnasium.Env, num_steps: int, num_envs: int
-) -> RolloutFn:
+
+def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> RolloutFn:
     def collect_rollout(
         key: Key, train_state: TrainState, policy: Policy
     ) -> tuple[Transition, TrainState]:
@@ -21,14 +22,14 @@ def make_rollout_fn(
 
         transitions = []
         obs = train_state.last_obs
+        prev_step = train_state.time_steps
+        prev_time = time.perf_counter()
         for _ in range(num_steps):
             # Select action
             key, act_key = jax.random.split(key)
             action, _ = policy(act_key, obs)
             # Take a step in the environment
-            next_obs, reward, done, truncated, info = env.step(
-                np.array(action)
-            )
+            next_obs, reward, done, truncated, info = env.step(np.array(action))
             # Record the transition
             transition = Transition(
                 obs=jnp.array(obs),
@@ -41,6 +42,20 @@ def make_rollout_fn(
             transitions.append(transition)
             obs = next_obs
 
+            if "final_info" in info:
+                ep_returns = []
+                for info in info["final_info"]:
+                    if info and "episode" in info:
+                        print(
+                            f"global_step={train_state.time_steps}, episode_return={info['episode']['r']}, episode_length={info['episode']['l']}"
+                        )
+                        ep_returns.append(info["episode"]["r"])
+                
+                wandb.log(
+                    {"train/episode_return": np.mean(ep_returns)},
+                    step=train_state.time_steps,
+                )
+
         transitions = jax.tree.map(lambda *xs: jnp.stack(xs), *transitions)
         train_state = train_state.replace(
             last_obs=obs,
@@ -52,7 +67,9 @@ def make_rollout_fn(
     return collect_rollout
 
 
-def make_eval_fn(env: gymnasium.Env, max_episode_steps: int, max_eval_episodes: int) -> EvalFn:
+def make_eval_fn(
+    env: gymnasium.Env, max_episode_steps: int, max_eval_episodes: int
+) -> EvalFn:
     def evaluate(key: Key, policy: Policy) -> dict:
         # Evaluate the policy in the environment
         key, eval_key = jax.random.split(key)

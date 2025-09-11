@@ -153,28 +153,31 @@ def make_log_callback():
     steps = [0]
 
     def log_callback(state, metrics):
-        time_steps = np.array(state.time_steps)
-        if time_steps.ndim > 0:
-            state = state.replace(time_steps=time_steps[0])
-            metrics["sys/time_step"] = time_steps
-        else:
-            metrics["sys/time_step"] = time_steps
+        add_system_metrics(state, metrics)
+        metrics = jax.tree.map(lambda x: jnp.array(x).mean().item(), metrics)
+        steps.append(metrics["sys/time_step"])
+        times.append(metrics["sys/time"])
+        metric_history.append(metrics)
+  
+        # Use pop() with a default value of None in case 'advantages' key doesn't exist
+        advantages = metrics.pop("train/advantages", None)
+        print_logs(metrics)
+       
+        if advantages is not None:
+            metrics["train/advantages"] = wandb.Histogram(advantages)
+        wandb.log(metrics, step=int(metrics["sys/time_step"]))
 
+    def add_system_metrics(state, metrics):
+        metrics["sys/time_step"] = state.time_steps
         metrics["sys/time"] = time.perf_counter()
         num_env_steps = state.time_steps - steps[-1]
         seconds = metrics["sys/time"] - times[-1]
         sps = num_env_steps / seconds
         duration = metrics["sys/time"] - times[0]
-        steps.append(state.time_steps)
-        times.append(metrics["sys/time"])
         metrics["sys/wall_time"] = duration
         metrics["sys/sps"] = sps
-        metrics.pop("time_step", None)
-        metrics = jax.tree.map(jnp.array, metrics)
-        metric_history.append(metrics)
-        episode_return = metrics["eval/episode_return"].mean()
-        # Use pop() with a default value of None in case 'advantages' key doesn't exist
-        advantages = metrics.pop("train/advantages", None)
+
+    def print_logs(metrics):
         log_strs = []
         pev_category = None
         for k, v in sorted(metrics.items()):
@@ -195,13 +198,6 @@ def make_log_callback():
         logging.info(
             "\n" + "\n".join(log_strs)
         )
-        log_data = {
-            "eval/episode_return": episode_return,
-            **jax.tree.map(jnp.mean, filter_prefix("train", metrics)),
-        }
-        if advantages is not None:
-            log_data["train/advantages"] = wandb.Histogram(advantages)
-        wandb.log(log_data, step=state.time_steps)
 
     return log_callback
 

@@ -1,6 +1,6 @@
 total_time_steps: 50_000_000
 normalize_env: true
-max_episode_steps: 1000
+max_episode_steps: ${env.max_episode_steps}
 eval_interval: 2
 num_eval: 20
 

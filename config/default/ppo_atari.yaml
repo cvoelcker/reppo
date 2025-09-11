@@ -28,13 +28,6 @@ algorithm:
     _target_: src.algorithms.ppo.networks.PPOAtariNetworks
     _partial_: true
 
-runner:
-  eval_fn:
-    _target_: src.runners.atari_runner.make_eval_fn
-    _partial_: true
-    max_episode_steps: ${algorithm.max_episode_steps}
-    max_eval_episodes: 128
-
 seed: 0
 name: "ppo"
 tags: []

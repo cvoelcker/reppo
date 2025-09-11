@@ -236,7 +236,7 @@ def make_learner_fn(
             value = critic_pred["value"]
             actor_loss = jnp.sum(pi.probs * ((alpha * pi.logits) - value), axis=-1)
             entropy = pi.entropy()
-            action_size_target = hparams.ent_target_mult
+            action_size_target = hparams.ent_target_mult * jnp.log(action_space.n)
         else:
             pred_action, log_prob = pi.sample_and_log_prob(
                 seed=minibatch.extras["action_key"]
