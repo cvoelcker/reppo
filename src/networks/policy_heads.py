@@ -11,7 +11,9 @@ from src.networks.common import MLP
 class DiscretePolicyHead(nnx.Module):
 
 
-    def __call__(self, features: jax.Array, deterministic: bool = False, scale: jax.Array = 1.0) -> distrax.Categorical | jax.Array:
+    def __call__(self, features: jax.Array, deterministic: bool = False, scale: None | jax.Array = None) -> distrax.Categorical | jax.Array:
+        if scale is None:
+            scale = 1.0
         logits = jax.nn.log_softmax(features, axis=-1)
         if deterministic:
             return jnp.argmax(logits, axis=-1)
@@ -27,7 +29,9 @@ class TanhGaussianPolicyHead(nnx.Module):
     ):
         self.min_std = min_std
 
-    def __call__(self, features: jax.Array, deterministic: bool = False, scale: jax.Array = 1.0) -> distrax.Distribution | jax.Array:
+    def __call__(self, features: jax.Array, deterministic: bool = False, scale: None | jax.Array = None) -> distrax.Distribution | jax.Array:
+        if scale is None:
+            scale = 1.0
         mean, log_std = jnp.split(features, 2, axis=-1)
         if deterministic:
             return jnp.tanh(mean)

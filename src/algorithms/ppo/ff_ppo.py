@@ -321,8 +321,12 @@ def make_policy_fn(
             model = nnx.merge(train_state.graphdef, train_state.params)
             pi = model.actor(obs)
             value = model.critic(obs)
-            action = pi.sample(seed=key)
-            log_prob = pi.log_prob(action)
+            if eval_mode:
+                action = pi.mode()
+                log_prob = pi.log_prob(action)
+            else:
+                action = pi.sample(seed=key)
+                log_prob = pi.log_prob(action)
             return action, dict(log_prob=log_prob, value=value)
 
         return jax.jit(policy)

@@ -11,12 +11,13 @@ class UnitBallNorm(nnx.Module):
 
 
 def normed_activation_layer(
-    rngs, in_features, out_features, use_norm=True, activation=nnx.swish
+    rngs, in_features, out_features, use_norm=True, activation=nnx.swish, scale=1.0
 ):
     layers = [
         nnx.Linear(
             in_features=in_features,
             out_features=out_features,
+            kernel_init=nnx.initializers.orthogonal(scale=scale),
             rngs=rngs,
         )
     ]
@@ -47,6 +48,7 @@ class MLP(nnx.Module):
         input_skip: bool = False,
         hidden_skip: bool = False,
         output_skip: bool = False,
+        final_layer_scaling: float = 1.0,
         *,
         rngs: nnx.Rngs,
     ):
@@ -80,7 +82,7 @@ class MLP(nnx.Module):
             )
             for _ in range(layers - 2)
         ]
-        self.norm = nnx.RMSNorm(in_features, rngs=rngs)
+        self.norm = nnx.LayerNorm(in_features, rngs=rngs)
         self.output_layer = normed_activation_layer(
             rngs,
             hidden_dim,

@@ -21,41 +21,14 @@ from src.normalization import Normalizer
 from src.algorithms import utils
 import distrax
 
-
-
-
-def create_exploration_offset(
-    num_envs: int,
-    exploration_base_envs: int,
-    noise_min: float,
-    noise_max: float,
-) -> jax.Array:
-    offset = (
-        jnp.arange(num_envs - exploration_base_envs)[:, None]
-        * (noise_max - noise_min)
-        / (num_envs - exploration_base_envs)
-    ) + noise_min
-    offset = jnp.concatenate(
-        [
-            jnp.ones((exploration_base_envs, 1)) * noise_min,
-            offset,
-        ],
-        axis=0,
-    )
-
-    return offset
+logging.basicConfig(level=logging.INFO)
 
 
 def make_policy_fn(
     cfg: DictConfig, observation_space: Space, action_space: Space
 ) -> Callable[[REPPOTrainState, bool], Policy]:
     cfg = cfg.algorithm
-    offset = create_exploration_offset(
-        num_envs=cfg.num_envs,
-        exploration_base_envs=cfg.exploration_base_envs,
-        noise_min=cfg.exploration_noise_min,
-        noise_max=cfg.exploration_noise_max,
-    )
+    offset = None
 
     def policy_fn(train_state: REPPOTrainState, eval: bool) -> Policy:
         normalizer = Normalizer()
@@ -92,21 +65,14 @@ def make_init_fn(
         key, model_key = jax.random.split(key)
         rngs = nnx.Rngs(model_key)
 
-        if not hparams.anneal_lr:
-            lr = hparams.lr
-        else:
-            num_iterations = (
-                hparams.total_time_steps // hparams.num_steps // hparams.num_envs
-            )
-            num_updates = num_iterations * hparams.num_epochs * hparams.num_mini_batches
-            lr = optax.linear_schedule(hparams.lr, 0, num_updates)
+        optim = hydra.utils.instantiate(hparams.optimizer)
 
         if hparams.max_grad_norm is not None:
             tx = optax.chain(
-                optax.clip_by_global_norm(hparams.max_grad_norm), optax.adam(lr)
+                optax.clip_by_global_norm(hparams.max_grad_norm), optim
             )
         else:
-            tx = optax.adam(lr)
+            tx = optim
 
         if hparams.normalize_env:
             normalizer = Normalizer()
@@ -236,34 +202,51 @@ def make_learner_fn(
             value = critic_pred["value"]
             actor_loss = jnp.sum(pi.probs * ((alpha * pi.logits) - value), axis=-1)
             entropy = pi.entropy()
-            action_size_target = hparams.ent_target_mult * jnp.log(action_space.n)
+            action_size_target = -math.log(d) * hparams.ent_target_mult
+            # jax.debug.print("entropy: {e}, alpha: {a}, value {v}", e=jnp.mean(entropy), a=alpha, v=jnp.mean(value))
         else:
-            pred_action, log_prob = pi.sample_and_log_prob(
-                seed=minibatch.extras["action_key"]
-            )
-            critic_pred = critic_target_model(minibatch.obs, pred_action)
-            value = critic_pred["value"]
-            actor_loss = log_prob * alpha - value
-            entropy = -log_prob
-            action_size_target = pred_action.shape[-1] * hparams.ent_target_mult
-            if hparams.use_score_based_gradient:
+            if hparams.gradient_estimator == "score_based_gae":
+                pred_action, aux_log_prob = pi.sample_and_log_prob(
+                    seed=minibatch.extras["action_key"], sample_shape=(4 * d,)  # WARNING: magic number
+                )
+                adv = minibatch.extras["target_advs"] - minibatch.extras["target_advs"].mean() / (minibatch.extras["target_advs"].std() + 1e-8)
+
+                log_prob = pi.log_prob(minibatch.action.clip(-0.999, 0.999))
+                old_log_prob = jax.lax.stop_gradient(old_pi.log_prob(minibatch.action).clip(-0.999, 0.999))
+                ratio = jnp.exp(log_prob - old_log_prob)
+
+                actor_loss1 = ratio * adv
+                actor_loss2 = (
+                    jnp.clip(ratio, 1 - 0.2, 1 + 0.2)
+                    * adv
+                )
+                actor_loss = alpha * aux_log_prob.mean(0) - jnp.minimum(actor_loss1, actor_loss2)
+
+                entropy = -aux_log_prob.mean(axis=0)
+            elif hparams.gradient_estimator == "score_based_q":
                 pred_action, log_prob = pi.sample_and_log_prob(
                     seed=minibatch.extras["action_key"], sample_shape=(4 * d,)  # WARNING: magic number
                 )
                 obs = jnp.repeat(minibatch.obs[None, ...], pred_action.shape[0], axis=0)
                 critic_pred = critic_target_model(obs, pred_action)
-                value = critic_pred["value"].mean(axis=0, keepdims=True)
+                value = critic_pred["value"].sum(axis=0, keepdims=True)
+                value = (value - critic_pred["value"]) / (critic_pred["value"].shape[0] - 1)
                 adv = critic_pred["value"] - value
-                actor_loss = -jnp.mean(log_prob *  jax.lax.stop_gradient(adv) - alpha * log_prob, axis=0)
+                actor_loss = -jnp.mean(log_prob * jax.lax.stop_gradient(adv) - alpha * log_prob, axis=0)
                 entropy = -log_prob.mean(axis=0)
-            else:
+            elif hparams.gradient_estimator == "pathwise_q":
                 pred_action, log_prob = pi.sample_and_log_prob(
                     seed=minibatch.extras["action_key"]
                 )
-                critic_pred = critic_target_model(minibatch.obs, pred_action)
+                obs = minibatch.obs
+                critic_pred = critic_target_model(obs, pred_action)
                 value = critic_pred["value"]
                 actor_loss = log_prob * alpha - value
                 entropy = -log_prob
+            else:
+                raise ValueError(
+                    f"Unknown gradient estimator: {hparams.gradient_estimator}"
+                )
             action_size_target = pred_action.shape[-1] * hparams.ent_target_mult
 
         lagrangian = actor_model.lagrangian()
@@ -326,7 +309,7 @@ def make_learner_fn(
                 kl = pi.kl_divergence(old_pi)
             else:
                 pi_action, pi_act_log_prob = pi.sample_and_log_prob(
-                    sample_shape=(16,), seed=minibatch.extras["kl_key"]
+                    sample_shape=(4,), seed=minibatch.extras["kl_key"]
                 )
                 pi_action = jnp.clip(pi_action, -1 + 1e-4, 1 - 1e-4)
                 old_pi_act_log_prob = old_pi.log_prob(pi_action).mean(0)
@@ -337,7 +320,7 @@ def make_learner_fn(
                 kl = old_pi.kl_divergence(pi)
             else:
                 old_pi_action, old_pi_act_log_prob = old_pi.sample_and_log_prob(
-                    sample_shape=(16,), seed=minibatch.extras["kl_key"]
+                    sample_shape=(4,), seed=minibatch.extras["kl_key"]
                 )
                 old_pi_action = jnp.clip(old_pi_action, -1 + 1e-4, 1 - 1e-4)
 
@@ -395,44 +378,49 @@ def make_learner_fn(
 
     def nstep_lambda(batch: Transition):
         def loop(carry: tuple[jax.Array, ...], transition: Transition):
-            lambda_return, truncated, importance_weight = carry
+            lambda_return, gae, truncated , next_value, importance_weight = carry
 
             # combine importance_weights with TD lambda
             done = transition.done
             reward = transition.extras["soft_reward"]
             value = transition.extras["value"]
+            policy_value = transition.extras["policy_value"]
             lambda_sum = (
-                jnp.exp(importance_weight) * hparams.lmbda * lambda_return
-                + (1 - jnp.exp(importance_weight) * hparams.lmbda) * value
+                hparams.lmbda * lambda_return + (1 - hparams.lmbda) * value
             )
-            delta = hparams.gamma * jnp.where(truncated, value, (1.0 - done) * lambda_sum)
-            lambda_return = reward + delta
+            lambda_return = reward + hparams.gamma * jnp.where(truncated, value, (1.0 - done) * lambda_sum)
+
+            # GAE for policy
+            delta = reward + hparams.gamma * (1.0 - done) * next_value - policy_value
+            gae = delta + hparams.gamma * (1.0 - done) * hparams.lmbda * gae
+            truncated_gae = reward + hparams.gamma * (1.0 - done) * next_value - value
+            gae = jnp.where(truncated, truncated_gae, gae)
+
             truncated = transition.truncated
             return (
                 lambda_return,
+                gae,
                 truncated,
+                policy_value,
                 transition.extras["importance_weight"],
-            ), lambda_return
+            ), (lambda_return, gae)
 
-        _, target_values = jax.lax.scan(
+        _, (target_values, target_advs) = jax.lax.scan(
             f=loop,
             init=(
                 batch.extras["value"][-1],
+                jnp.zeros_like(batch.extras["value"][-1]),
                 jnp.ones_like(batch.truncated[0]),
+                batch.extras["final_value"][-1],
                 jnp.zeros_like(batch.extras["importance_weight"][0]),
             ),
             xs=batch,
             reverse=True,
         )
-        return target_values
+        return target_values, target_advs
 
     def compute_extras(key: Key, train_state: REPPOTrainState, batch: Transition):
-        offset = create_exploration_offset(
-            num_envs=hparams.num_envs,
-            exploration_base_envs=hparams.exploration_base_envs,
-            noise_min=hparams.exploration_noise_min,
-            noise_max=hparams.exploration_noise_max,
-        )
+        offset = None
 
         last_obs = train_state.last_obs
         if hparams.normalize_env:
@@ -469,9 +457,23 @@ def make_learner_fn(
             raw_importance_weight, min=jnp.log(hparams.lmbda_min), max=jnp.log(1.0)
         )
 
+        # compute average policy value
+        actions = pi.sample(seed=act_key, sample_shape=(4 * d,))  # WARNING: magic number
+        actions = jnp.clip(actions, -0.999, 0.999)
+        obs = jnp.repeat(batch.obs[None, ...], actions.shape[0], axis=0)
+        policy_value = critic_model(obs, actions)["value"].mean(0)
+
+        # final_value
+        actions = actor_model(last_obs).sample(seed=act_key, sample_shape=(4 * d,))  # WARNING: magic number
+        actions = jnp.clip(actions, -0.999, 0.999)
+        obs = jnp.repeat(last_obs[None, ...], actions.shape[0], axis=0)
+        final_value = critic_model(obs, actions)["value"].mean(0)
+
         extras = {
             "soft_reward": soft_reward * cfg.env.get("reward_scaling", 1.0),
             "value": jnp.concatenate([value[1:], last_value[None]], axis=0),
+            "policy_value": policy_value,
+            "final_value": final_value[None, ...].repeat(batch.reward.shape[0], axis=0),
             "next_emb": jnp.concatenate([emb[1:], last_emb[None]], axis=0),
             "importance_weight": importance_weight,
         }
@@ -494,7 +496,7 @@ def make_learner_fn(
         extras = compute_extras(key=act_key, train_state=train_state, batch=batch)
         batch.extras.update(extras)
 
-        batch.extras["target_values"] = nstep_lambda(batch=batch)
+        batch.extras["target_values"], batch.extras["target_advs"] = nstep_lambda(batch=batch)
 
         # Reshape data to (num_steps * num_envs, ...)
 

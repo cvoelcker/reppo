@@ -19,11 +19,11 @@ hostname
 # cd /home/$USER/projects/aip-gigor/voelcker/reppo
 source .venv/bin/activate
 
-uv run src/algorithms/reppo/train_reppo.py --config-name=ff_playground \
+uv run src/train.py --config-name=reppo_continuous \
 	logging=wandb_online \
-	logging.project=reppo \
-	algorithm.use_score_based_gradient=True \
+	env=mjx_dmc \
     env.name=${env[$((SLURM_ARRAY_TASK_ID%23))]} \
-	seed=$RANDOM \
 	+experiments=$1 \
-	tags=[score_based,mjx,paper_adamw,$2]
+	seed=$RANDOM \
+	algorithm.gradient_estimator=score_based_$2 \
+	tags=[score_based,mjx,paper_adamw,$3]

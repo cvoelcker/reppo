@@ -106,16 +106,17 @@ class PPOAtariNetworks(nnx.Module):
                 rngs=rngs,
             )
         
-        cnn = AtariCNNEncoder(output_dim=hidden_dim, rngs=rngs)
+        actor_cnn = AtariCNNEncoder(output_dim=hidden_dim, rngs=rngs)
+        critic_cnn = AtariCNNEncoder(output_dim=hidden_dim, rngs=rngs)
 
         self.actor_module = nnx.Sequential(
-            cnn,
+            actor_cnn,
             nnx.relu,
             linear_layer(hidden_dim, action_space.n, scale=0.01)
         )
 
         self.critic_module = nnx.Sequential(
-            cnn,
+            critic_cnn,
             nnx.relu,
             linear_layer(hidden_dim, 1, scale=1.0),
         )

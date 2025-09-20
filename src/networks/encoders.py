@@ -53,8 +53,7 @@ class AtariCNNEncoder(nnx.Module):
                 out_features=32,
                 kernel_size=(8, 8),
                 strides=(4, 4),
-                kernel_init=nnx.initializers.orthogonal(scale=jnp.sqrt(2)),
-                bias_init=nnx.initializers.zeros_init(),
+                kernel_init=nnx.initializers.he_normal(),
                 padding="VALID",
                 rngs=rngs,
             ),
@@ -64,8 +63,7 @@ class AtariCNNEncoder(nnx.Module):
                 out_features=64,
                 kernel_size=(4, 4),
                 strides=(2, 2),
-                kernel_init=nnx.initializers.orthogonal(scale=jnp.sqrt(2)),
-                bias_init=nnx.initializers.zeros_init(),
+                kernel_init=nnx.initializers.he_normal(),
                 padding="VALID",
                 rngs=rngs,
             ),
@@ -75,8 +73,7 @@ class AtariCNNEncoder(nnx.Module):
                 out_features=64,
                 kernel_size=(3, 3),
                 strides=(1, 1),
-                kernel_init=nnx.initializers.orthogonal(scale=jnp.sqrt(2)),
-                bias_init=nnx.initializers.zeros_init(),
+                kernel_init=nnx.initializers.he_normal(),
                 padding="VALID",
                 rngs=rngs,
             ),
@@ -85,8 +82,7 @@ class AtariCNNEncoder(nnx.Module):
         self.project = nnx.Linear(
             in_features=7 * 7 * 64,
             out_features=output_dim,
-            kernel_init=nnx.initializers.orthogonal(scale=jnp.sqrt(2)),
-            bias_init=nnx.initializers.zeros_init(),
+            kernel_init=nnx.initializers.he_normal(),
             rngs=rngs,
         )
 
@@ -96,6 +92,7 @@ class AtariCNNEncoder(nnx.Module):
         x = self.cnn(x)
         x = x.reshape(*x.shape[:-3], -1)
         x = self.project(x)
+        x = nnx.relu(x)
         return x
 
 

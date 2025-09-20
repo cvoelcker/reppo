@@ -1,13 +1,5 @@
 type: atari
-name: Pong-v5
+name: Breakout-v5
+vmin: -10
+vmax: 10
 max_episode_steps: 27000
-vmin: ${env.vmin_per_env[${env.name}]}
-vmax: ${env.vmax_per_env[${env.name}]}
-
-vmax_per_env:
-  Pong-v5: 10
-  Breakout-v5: 10
-
-vmin_per_env:
-  Pong-v5: -10
-  Breakout-v5: 0

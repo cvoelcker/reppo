@@ -223,22 +223,29 @@ def make_discrete_actor(
     hparams = cfg.algorithm
     if encoder is not None:
         actor_encoder = encoder
+        in_features = hparams.actor_hidden_dim
     else:
-        actor_encoder = MLP(
-            in_features=observation_space.shape[0],
+        actor_encoder = Identity()
+        in_features = observation_space.shape[0]
+    actor_head = MLP(
+            in_features=in_features,
             out_features=action_space.n,
             hidden_dim=hparams.actor_hidden_dim,
-            hidden_activation=nnx.swish,
+            hidden_activation=nnx.relu,
             output_activation=None,
             use_norm=hparams.use_actor_norm,
             use_output_norm=False,
             layers=hparams.num_actor_layers,
             hidden_skip=hparams.use_actor_skip,
             output_skip=hparams.use_actor_skip,
+            final_layer_scaling=0.01,
             rngs=rngs,
         )
     actor = Actor(
-        feature_encoder=actor_encoder,
+        feature_encoder=nnx.Sequential(
+            actor_encoder,
+            actor_head
+        ),
         policy_head=DiscretePolicyHead(),
         kl_start=hparams.kl_start,
         ent_start=hparams.ent_start,
@@ -284,7 +291,7 @@ def make_discrete_critic(
                 use_norm=hparams.use_critic_norm,
                 use_output_norm=False,
                 layers=hparams.num_critic_head_layers,
-                input_activation=not hparams.use_simplical_embedding,
+                input_activation=False,
                 input_skip=hparams.use_critic_skip,
                 hidden_skip=hparams.use_critic_skip,
                 rngs=rngs,
@@ -306,7 +313,7 @@ def make_discrete_critic(
         use_norm=hparams.use_critic_norm,
         use_output_norm=None,
         layers=hparams.num_critic_pred_layers,
-        input_activation=not hparams.use_simplical_embedding,
+        input_activation=False,
         input_skip=hparams.use_critic_skip,
         hidden_skip=hparams.use_critic_skip,
         output_skip=False,
@@ -430,57 +437,11 @@ def make_atari_ff_networks(
         output_dim=cfg.algorithm.critic_hidden_dim,
         rngs=rngs,
     )
-
-    actor = Actor(
-        feature_encoder=nnx.Sequential(
-            cnn,
-            nnx.relu,
-            nnx.Linear(
-                in_features=cfg.algorithm.critic_hidden_dim,
-                out_features=action_space.n,
-                rngs=rngs,
-                kernel_init=nnx.initializers.orthogonal(scale=0.01),
-                bias_init=nnx.initializers.zeros_init(),
-            ),
-        ),
-        policy_head=DiscretePolicyHead(),
-        kl_start=cfg.algorithm.kl_start,
-        ent_start=cfg.algorithm.ent_start,
-        asymmetric_obs=False,
-    )
-    critic = Critic(
-        feature_encoder=nnx.clone(cnn),
-        q_network=nnx.Sequential(
-            StateActionInput(
-                state_encoder=nnx.Sequential(
-                    nnx.relu,
-                    nnx.Linear(
-                        in_features=cfg.algorithm.critic_hidden_dim,
-                        out_features=cfg.algorithm.num_bins * action_space.n,
-                        kernel_init=nnx.initializers.orthogonal(scale=1.0),
-                        bias_init=nnx.initializers.zeros_init(),
-                        rngs=rngs,
-                    ),
-                ),
-                concatenate=False,
-            ),
-            CategoricalDiscreteQNetworkHead(
-                num_bins=cfg.algorithm.num_bins,
-                vmin=cfg.algorithm.vmin,
-                vmax=cfg.algorithm.vmax,
-            ),
-        ),
-        prediction_network=nnx.Sequential(
-            nnx.relu,
-            nnx.Linear(
-                in_features=cfg.algorithm.critic_hidden_dim,
-                out_features=cfg.algorithm.critic_hidden_dim + 1,
-                kernel_init=nnx.initializers.orthogonal(scale=1.0),
-                bias_init=nnx.initializers.zeros_init(),
-                rngs=rngs,
-            ),
-        ),
-        asymmetric_obs=False,
-        is_discrete=True,
+    actor = make_discrete_actor(
+        cfg,
+        observation_space=observation_space,
+        action_space=action_space,
+        encoder=nnx.clone(cnn),
+        rngs=rngs,
     )
     return actor, critic

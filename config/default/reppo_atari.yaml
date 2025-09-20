@@ -6,24 +6,15 @@ defaults:
   - _self_
 
 algorithm:
-  total_time_steps: 10000000
+  total_time_steps: 50000000
+  max_episode_steps: 27000
   normalize_env: false
   num_envs: 8
   num_steps: 128
   num_mini_batches: 4
-  num_epochs: 4
-  learning_rate: 2.5e-4
-  anneal_lr: false
-  gamma: 0.99
-  lmbda: 0.95
-  #num_bins: 51
-  actor_hidden_dim: 512
-  critic_hidden_dim: 512
-  ent_target_mult: 0.0
-  aux_loss_mult: 1.0
-  exploration_base_envs: 0
-  exploration_noise_min: 1.0
-  exploration_noise_max: 1.0
+  exploration_base_envs: 4
+  exploration_noise_min: 0.1
+  exploration_noise_max: 5.0
 
   network:
     _target_: src.algorithms.reppo.networks.make_atari_ff_networks
