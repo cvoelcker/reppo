@@ -206,13 +206,17 @@ def make_learner_fn(
             # jax.debug.print("entropy: {e}, alpha: {a}, value {v}", e=jnp.mean(entropy), a=alpha, v=jnp.mean(value))
         else:
             if hparams.gradient_estimator == "score_based_gae":
+                if hparams.scale_samples_with_action_d:
+                    num_samples = 16 * d
+                else:
+                    num_samples = 16
                 pred_action, aux_log_prob = pi.sample_and_log_prob(
-                    seed=minibatch.extras["action_key"], sample_shape=(4 * d,)  # WARNING: magic number
+                    seed=minibatch.extras["action_key"], sample_shape=(num_samples,)  # WARNING: magic number
                 )
-                adv = minibatch.extras["target_advs"] - minibatch.extras["target_advs"].mean() / (minibatch.extras["target_advs"].std() + 1e-8)
+                adv = (minibatch.extras["target_advs"] - minibatch.extras["target_advs"].mean()) / (minibatch.extras["target_advs"].std() + 1e-8)
 
                 log_prob = pi.log_prob(minibatch.action.clip(-0.999, 0.999))
-                old_log_prob = jax.lax.stop_gradient(old_pi.log_prob(minibatch.action).clip(-0.999, 0.999))
+                old_log_prob = minibatch.extras["log_prob"]
                 ratio = jnp.exp(log_prob - old_log_prob)
 
                 actor_loss1 = ratio * adv
@@ -224,8 +228,12 @@ def make_learner_fn(
 
                 entropy = -aux_log_prob.mean(axis=0)
             elif hparams.gradient_estimator == "score_based_q":
+                if hparams.scale_samples_with_action_d:
+                    num_samples = 4 * d
+                else:
+                    num_samples = 4
                 pred_action, log_prob = pi.sample_and_log_prob(
-                    seed=minibatch.extras["action_key"], sample_shape=(4 * d,)  # WARNING: magic number
+                    seed=minibatch.extras["action_key"], sample_shape=(num_samples,)  # WARNING: magic number
                 )
                 obs = jnp.repeat(minibatch.obs[None, ...], pred_action.shape[0], axis=0)
                 critic_pred = critic_target_model(obs, pred_action)
@@ -442,7 +450,7 @@ def make_learner_fn(
         last_emb = last_critic_output["embed"]
         last_value = last_critic_output["value"]
 
-        log_probs = pi.log_prob(batch.action)
+        log_probs = pi.log_prob(batch.action.clip(-0.999,0.999))
         next_log_prob = jnp.concatenate([log_probs[1:], last_log_prob[None]], axis=0)
 
         soft_reward = (
@@ -458,7 +466,11 @@ def make_learner_fn(
         )
 
         # compute average policy value
-        actions = pi.sample(seed=act_key, sample_shape=(4 * d,))  # WARNING: magic number
+        if hparams.scale_samples_with_action_d:
+            num_samples = 8 * d
+        else:
+            num_samples = 8
+        actions = pi.sample(seed=act_key, sample_shape=(num_samples,))  # WARNING: magic number
         actions = jnp.clip(actions, -0.999, 0.999)
         obs = jnp.repeat(batch.obs[None, ...], actions.shape[0], axis=0)
         policy_value = critic_model(obs, actions)["value"].mean(0)
@@ -476,6 +488,7 @@ def make_learner_fn(
             "final_value": final_value[None, ...].repeat(batch.reward.shape[0], axis=0),
             "next_emb": jnp.concatenate([emb[1:], last_emb[None]], axis=0),
             "importance_weight": importance_weight,
+            "log_prob": log_probs,
         }
         return extras
 

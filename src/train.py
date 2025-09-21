@@ -21,7 +21,7 @@ def main(cfg: DictConfig):
         mode=cfg.logging.mode,
         project=cfg.logging.project,
         entity=cfg.logging.entity,
-        tags=[cfg.name, cfg.env.name, cfg.env.type, *cfg.tags],
+        tags=cfg.tags,
         config=OmegaConf.to_container(cfg),
         name=f"{cfg.name}-{cfg.env.name.lower()}",
         save_code=True,
