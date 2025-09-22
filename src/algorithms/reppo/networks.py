@@ -127,7 +127,7 @@ def make_continuous_actor(
         )
     actor = Actor(
         feature_encoder=actor_encoder,
-        policy_head=TanhGaussianPolicyHead(min_std=hparams.actor_min_std),
+        policy_head=TanhGaussianPolicyHead(min_std=hparams.actor_min_std, fixed_std=hparams.fixed_actor_std),
         kl_start=hparams.kl_start,
         ent_start=hparams.ent_start,
         asymmetric_obs=cfg.env.get("asymmetric_observation", False),

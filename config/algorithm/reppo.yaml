@@ -6,7 +6,7 @@ num_eval: 25
 
 # optimization settings (seem very stable)
 optimizer:
-  _target_: optax.radam
+  _target_: optax.adam
   learning_rate: 3e-4
 anneal_lr: false
 max_grad_norm: 0.5
@@ -15,10 +15,10 @@ polyak: 1.0 # maybe ablate ?
 # problem discount settings (need tuning)
 gamma: 0.99
 lmbda: 0.95
-lmbda_min: 0.50 # irrelevant if no exploration noise is added
+lmbda_min: 0.95 # irrelevant if no exploration noise is added
 
 # batch settings (need tuning for MJX humanoid)
-num_steps: 64
+num_steps: 128
 num_mini_batches: 128
 num_envs: 1024
 num_epochs: 4
@@ -63,7 +63,8 @@ update_entropy_lagrangian: true
 ## auxiliary loss settings
 aux_loss_mult: 1.0
 gradient_estimator: "pathwise_q" # "score_based_gae", "score_based_q", "pathwise_q"
-scale_samples_with_action_d: True
+scale_samples_with_action_d: False
+fixed_actor_std: false
 
 network:
   _target_: src.algorithms.reppo.networks.make_continuous_ff_networks

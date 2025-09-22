@@ -1,6 +1,7 @@
 import logging
 import math
 from typing import Callable
+import operator
 
 import hydra
 import jax
@@ -78,7 +79,7 @@ def make_init_fn(
             normalizer = Normalizer()
             norm_state = normalizer.init(
                 jax.tree.map(
-                    jnp.zeros_like,
+                    lambda x: jnp.zeros_like(x, dtype=float),  # type: ignore
                     observation_space.sample(key),
                 )
             )
@@ -203,7 +204,6 @@ def make_learner_fn(
             actor_loss = jnp.sum(pi.probs * ((alpha * pi.logits) - value), axis=-1)
             entropy = pi.entropy()
             action_size_target = -math.log(d) * hparams.ent_target_mult
-            # jax.debug.print("entropy: {e}, alpha: {a}, value {v}", e=jnp.mean(entropy), a=alpha, v=jnp.mean(value))
         else:
             if hparams.gradient_estimator == "score_based_gae":
                 if hparams.scale_samples_with_action_d:
@@ -214,19 +214,17 @@ def make_learner_fn(
                     seed=minibatch.extras["action_key"], sample_shape=(num_samples,)  # WARNING: magic number
                 )
                 adv = (minibatch.extras["target_advs"] - minibatch.extras["target_advs"].mean()) / (minibatch.extras["target_advs"].std() + 1e-8)
-
                 log_prob = pi.log_prob(minibatch.action.clip(-0.999, 0.999))
                 old_log_prob = minibatch.extras["log_prob"]
                 ratio = jnp.exp(log_prob - old_log_prob)
-
                 actor_loss1 = ratio * adv
                 actor_loss2 = (
-                    jnp.clip(ratio, 1 - 0.2, 1 + 0.2)
+                    jnp.clip(ratio, 0.9, 1.1)
                     * adv
                 )
                 actor_loss = alpha * aux_log_prob.mean(0) - jnp.minimum(actor_loss1, actor_loss2)
-
                 entropy = -aux_log_prob.mean(axis=0)
+
             elif hparams.gradient_estimator == "score_based_q":
                 if hparams.scale_samples_with_action_d:
                     num_samples = 4 * d
@@ -242,6 +240,7 @@ def make_learner_fn(
                 adv = critic_pred["value"] - value
                 actor_loss = -jnp.mean(log_prob * jax.lax.stop_gradient(adv) - alpha * log_prob, axis=0)
                 entropy = -log_prob.mean(axis=0)
+
             elif hparams.gradient_estimator == "pathwise_q":
                 pred_action, log_prob = pi.sample_and_log_prob(
                     seed=minibatch.extras["action_key"]
@@ -251,11 +250,12 @@ def make_learner_fn(
                 value = critic_pred["value"]
                 actor_loss = log_prob * alpha - value
                 entropy = -log_prob
+
             else:
                 raise ValueError(
                     f"Unknown gradient estimator: {hparams.gradient_estimator}"
                 )
-            action_size_target = pred_action.shape[-1] * hparams.ent_target_mult
+            action_size_target = d * hparams.ent_target_mult
 
         lagrangian = actor_model.lagrangian()
 
@@ -349,6 +349,11 @@ def make_learner_fn(
 
         actor_grad_fn = jax.value_and_grad(actor_loss, has_aux=True)
         output, grads = actor_grad_fn(train_state.actor.params, train_state, batch)
+        grad_norm = jax.tree.map(lambda x: jnp.linalg.norm(x), grads)
+        grad_norm = jax.tree.reduce(operator.add, grad_norm)
+        grads = jax.tree.map(
+            lambda x: jnp.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0), grads
+        )
         actor_train_state = train_state.actor.apply_gradients(grads)
         train_state = train_state.replace(
             actor=actor_train_state,
@@ -357,6 +362,7 @@ def make_learner_fn(
         return train_state, {
             **critic_metrics,
             **actor_metrics,
+            "grad_norm": grad_norm,
         }
 
     def run_epoch(
@@ -381,8 +387,11 @@ def make_learner_fn(
         # Run model update for each mini-batch
         train_state, metrics = jax.lax.scan(update, train_state, minibatches)
         # Compute mean metrics across mini-batches
-        metrics = jax.tree.map(lambda x: x.mean(0), metrics)
-        return train_state, metrics
+        metrics_mean = jax.tree.map(lambda x: x.mean(0), metrics)
+        # Compute max metrics across mini-batches
+        metrics_max = jax.tree.map(lambda x: x.max(), metrics)
+        metrics_min = jax.tree.map(lambda x: x.min(), metrics)
+        return train_state, {**metrics_mean, **{k + "_max": v for k, v in metrics_max.items()}, **{k + "_min": v for k, v in metrics_min.items()}}
 
     def nstep_lambda(batch: Transition):
         def loop(carry: tuple[jax.Array, ...], transition: Transition):
@@ -476,7 +485,7 @@ def make_learner_fn(
         policy_value = critic_model(obs, actions)["value"].mean(0)
 
         # final_value
-        actions = actor_model(last_obs).sample(seed=act_key, sample_shape=(4 * d,))  # WARNING: magic number
+        actions = actor_model(last_obs).sample(seed=act_key, sample_shape=(num_samples,))  # WARNING: magic number
         actions = jnp.clip(actions, -0.999, 0.999)
         obs = jnp.repeat(last_obs[None, ...], actions.shape[0], axis=0)
         final_value = critic_model(obs, actions)["value"].mean(0)
