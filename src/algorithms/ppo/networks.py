@@ -14,6 +14,7 @@ class PPONetworks(nnx.Module):
         obs_space: gymnax.environments.spaces.Space,
         action_space: gymnax.environments.spaces.Space,
         hidden_dim: int = 64,
+        use_tanh_gaussian: bool = False,
         *,
         rngs: nnx.Rngs,
     ):
@@ -63,6 +64,7 @@ class PPONetworks(nnx.Module):
             nnx.tanh,
             linear_layer(hidden_dim, 1, scale=1.0),
         )
+        self.use_tanh_gaussian = use_tanh_gaussian
 
     def critic(self, obs: jax.Array) -> jax.Array:
         if self.asymmetric_obs:
@@ -72,7 +74,7 @@ class PPONetworks(nnx.Module):
             obs = obs["privileged_state"]
         return self.critic_module(obs).squeeze()
 
-    def actor(self, obs: jax.Array) -> distrax.Distribution:
+    def actor(self, obs: jax.Array, deterministic: bool = False) -> distrax.Distribution:
         if self.asymmetric_obs:
             assert (
                 isinstance(obs, dict) and "state" in obs
@@ -82,9 +84,20 @@ class PPONetworks(nnx.Module):
         if self.discrete_action:
             pi = distrax.Categorical(logits=loc)
         else:
-            pi = distrax.MultivariateNormalDiag(
-                loc=loc, scale_diag=jnp.exp(self.log_std.value)
-            )
+            if self.use_tanh_gaussian:
+                if deterministic:
+                    return jnp.tanh(loc)
+                std = jnp.exp(self.log_std.value)
+                # pi = distrax.MultivariateNormalDiag(
+                #     loc=loc, scale_diag=loc
+                # )
+                pi = distrax.Transformed(distrax.Normal(loc=loc, scale=std), distrax.Tanh())
+                pi = distrax.Independent(pi, reinterpreted_batch_ndims=1)
+            else:
+                if deterministic:
+                    return loc
+                std = jnp.exp(self.log_std.value)
+                pi = distrax.MultivariateNormalDiag(loc=loc, scale_diag=std)
         return pi
     
 

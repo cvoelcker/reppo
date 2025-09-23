@@ -3,7 +3,7 @@ gamma: 0.99
 lmbda: 0.95
 clip_ratio: 0.2
 value_coef: 0.5
-entropy_coef: 0.0
+entropy_coef: 0.01
 total_time_steps: 50_000_000
 num_steps: 64
 num_mini_batches: 32
@@ -19,6 +19,7 @@ hidden_dim: 64
 loss: dpo
 alpha: 2.0
 beta: 0.6
+use_tanh_gaussian: False
 
 
 network:

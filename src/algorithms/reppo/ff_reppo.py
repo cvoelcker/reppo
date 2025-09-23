@@ -218,8 +218,9 @@ def make_learner_fn(
                 old_log_prob = minibatch.extras["log_prob"]
                 ratio = jnp.exp(log_prob - old_log_prob)
                 actor_loss1 = ratio * adv
+                EPS = 0.2  # hardcoded for now
                 actor_loss2 = (
-                    jnp.clip(ratio, 0.9, 1.1)
+                    jnp.clip(ratio, 1.0 - EPS, 1.0 + EPS)
                     * adv
                 )
                 actor_loss = alpha * aux_log_prob.mean(0) - jnp.minimum(actor_loss1, actor_loss2)
@@ -389,9 +390,9 @@ def make_learner_fn(
         # Compute mean metrics across mini-batches
         metrics_mean = jax.tree.map(lambda x: x.mean(0), metrics)
         # Compute max metrics across mini-batches
-        metrics_max = jax.tree.map(lambda x: x.max(), metrics)
-        metrics_min = jax.tree.map(lambda x: x.min(), metrics)
-        return train_state, {**metrics_mean, **{k + "_max": v for k, v in metrics_max.items()}, **{k + "_min": v for k, v in metrics_min.items()}}
+        # metrics_max = jax.tree.map(lambda x: x.max(), metrics)
+        # metrics_min = jax.tree.map(lambda x: x.min(), metrics)
+        return train_state, metrics_mean  # {**metrics_mean, **{k + "_max": v for k, v in metrics_max.items()}, **{k + "_min": v for k, v in metrics_min.items()}}
 
     def nstep_lambda(batch: Transition):
         def loop(carry: tuple[jax.Array, ...], transition: Transition):

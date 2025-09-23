@@ -51,6 +51,7 @@ def make_init_fn(
         networks = hydra.utils.instantiate(cfg.algorithm.network)(
             obs_space=observation_space,
             action_space=action_space,
+            use_tanh_gaussian=algo_cfg.get("use_tanh_gaussian", False),
             rngs=nnx.Rngs(model_key),
         )
 
@@ -148,7 +149,7 @@ def make_learner_fn(
             losses = ratio * advantages - drift
             mask = 1.0 - minibatch.truncated
             actor_loss = -jnp.mean(losses * mask)
-            entropy_loss = jnp.mean(pi.entropy())
+            entropy_loss = -log_prob.mean()
 
             loss = (
                 actor_loss
@@ -234,6 +235,20 @@ def make_learner_fn(
         # Compute mean metrics across mini-batches
         metrics = jax.tree.map(lambda x: x.mean(0), metrics)
         return train_state, metrics
+    
+    def compute_policy_kl(
+        minibatch: Transition, pi: distrax.Distribution, old_pi: distrax.Distribution, rng
+    ) -> jax.Array:
+        old_pi_action, old_pi_act_log_prob = old_pi.sample_and_log_prob(
+            sample_shape=(4,), seed=rng
+        )
+        old_pi_action = jnp.clip(old_pi_action, -1 + 1e-4, 1 - 1e-4)
+
+        old_pi_act_log_prob = old_pi_act_log_prob.mean(0)
+        pi_act_log_prob = pi.log_prob(old_pi_action).mean(0)
+        kl = old_pi_act_log_prob - pi_act_log_prob
+        return kl
+
 
     def learner_fn(
         key: Key, train_state: PPOTrainState, batch: Transition
@@ -294,13 +309,17 @@ def make_learner_fn(
 
         # Update the model for a number of epochs
         key, train_key = jax.random.split(key)
+        old_pi = model.actor(data.obs)
         train_state, update_metrics = jax.lax.scan(
             f=lambda train_state, key: run_epoch(key, train_state, data),
             init=train_state,
             xs=jax.random.split(train_key, algo_cfg.num_epochs),
         )
         # Get metrics from the last epoch
+        new_pi = model.actor(data.obs)
+        kl = compute_policy_kl(data, new_pi, old_pi, key).mean()
         update_metrics = jax.tree.map(lambda x: x[-1], update_metrics)
+        update_metrics["kl"] = kl
 
         return train_state, update_metrics
 
@@ -319,12 +338,13 @@ def make_policy_fn(
             if train_state.normalization_state is not None:
                 obs = normalizer.normalize(train_state.normalization_state, obs)
             model = nnx.merge(train_state.graphdef, train_state.params)
-            pi = model.actor(obs)
-            value = model.critic(obs)
             if eval_mode:
-                action = pi.mode()
-                log_prob = pi.log_prob(action)
+                action = model.actor(obs, deterministic=True)
+                log_prob = jnp.array([0.0,])
+                value = model.critic(obs)
             else:
+                pi = model.actor(obs)
+                value = model.critic(obs)
                 action = pi.sample(seed=key)
                 log_prob = pi.log_prob(action)
             return action, dict(log_prob=log_prob, value=value)
