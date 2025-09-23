@@ -59,13 +59,13 @@ def make_init_fn(
         if not algo_cfg.anneal_lr:
             lr = algo_cfg.lr
         else:
-            num_iterations = (
-                algo_cfg.total_time_steps // algo_cfg.num_steps // algo_cfg.num_envs
+            anneal_num_iterations = (
+                50_000_000 // algo_cfg.num_steps // algo_cfg.num_envs
             )
-            num_updates = (
-                num_iterations * algo_cfg.num_epochs * algo_cfg.num_mini_batches
+            anneal_num_updates = (
+                anneal_num_iterations * algo_cfg.num_epochs * algo_cfg.num_mini_batches
             )
-            lr = optax.linear_schedule(algo_cfg.lr, 1e-6, num_updates)
+            lr = optax.linear_schedule(algo_cfg.lr, 1e-6, anneal_num_updates)
 
         # Initialize the optimizer
         if algo_cfg.max_grad_norm is not None:
