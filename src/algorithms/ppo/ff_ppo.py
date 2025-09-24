@@ -65,7 +65,7 @@ def make_init_fn(
             anneal_num_updates = (
                 anneal_num_iterations * algo_cfg.num_epochs * algo_cfg.num_mini_batches
             )
-            lr = optax.linear_schedule(algo_cfg.lr, 1e-6, anneal_num_updates)
+            lr = optax.linear_schedule(algo_cfg.lr, 1e-5, anneal_num_updates)
 
         # Initialize the optimizer
         if algo_cfg.max_grad_norm is not None:
@@ -108,6 +108,12 @@ def make_learner_fn(
 
     def loss_fn(params: nnx.Param, train_state: TrainState, minibatch: Transition):
         model = nnx.merge(train_state.graphdef, params)
+
+        def estimate_entropy(n, seed):
+            pi_ent = model.actor(minibatch.obs)
+            _, log_prob = pi_ent.sample_and_log_prob(sample_shape=(n,), seed=seed)
+            return -jnp.mean(log_prob)
+
         pi = model.actor(minibatch.obs)
 
         if algo_cfg.loss == "rpo":
@@ -147,9 +153,9 @@ def make_learner_fn(
                 drift2,
             )
             losses = ratio * advantages - drift
-            mask = 1.0 - minibatch.truncated
+            mask = 1.0 - minibatch.truncate
             actor_loss = -jnp.mean(losses * mask)
-            entropy_loss = -log_prob.mean()
+            entropy_loss = jnp.mean(estimate_entropy(4, minibatch.extras["key"]))
 
             loss = (
                 actor_loss
@@ -167,7 +173,7 @@ def make_learner_fn(
             actor_loss = -jnp.mean(
                 (1.0 - minibatch.truncated) * jnp.minimum(actor_loss1, actor_loss2)
             )
-            entropy_loss = jnp.mean(pi.entropy())
+            entropy_loss = jnp.mean(estimate_entropy(4, minibatch.extras["key"]))
 
             loss = (
                 actor_loss
@@ -229,6 +235,7 @@ def make_learner_fn(
             indices,
         )
         minibatches = jax.tree.map(lambda x: jnp.take(x, minibatch_idxs, axis=0), batch)
+        minibatches.extras["key"] = jax.random.split(key, algo_cfg.num_mini_batches)
 
         # Run model update for each mini-batch
         train_state, metrics = jax.lax.scan(update, train_state, minibatches)
