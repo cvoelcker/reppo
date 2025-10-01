@@ -14,3 +14,11 @@ env_kwargs:
 
 vmin: -15
 vmax: 15
+
+demonstrations:
+  enabled: false                # Enable demonstration learning
+  demo_dir: "/home/tajiksh1/.maniskill/demos"          # Directory containing demo files
+  auto_download: false          # Auto-download demos if not found
+  max_episodes: 100            # Max number of demo episodes to load (null for all)
+  filter_success: true         # Only use successful demonstration episodes
+  batch_size: 64               # Batch size for demo data in each update

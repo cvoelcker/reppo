@@ -5,6 +5,8 @@ import random
 import sys
 import copy
 import time
+from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import tqdm
@@ -56,6 +58,8 @@ class TrainState:
     actor_optimizer: optim.Optimizer
     critic_optimizer: optim.Optimizer
     scaler: GradScaler
+    demo_data: Optional[TensorDict] = None
+    demo_batch_size: int = 0
 
     def compile(self):
         self.actor.compile()
@@ -63,6 +67,38 @@ class TrainState:
         self.critic.compile()
         self.normalizer.compile()
         self.critic_normalizer.compile()
+
+
+def load_demonstrations(env_cfg: DictConfig, device: torch.device) -> Optional[TensorDict]:
+    
+    demo_cfg = env_cfg.get("demonstrations", None)
+    if not demo_cfg or not demo_cfg.get("enabled", False):
+        return None
+    
+    try:
+        from src.torchrl.demo_loader import load_demos_for_training
+        
+        env_id = env_cfg.name
+        demo_dir = demo_cfg.get("demo_dir", "./demos")
+        
+        print(f"Loading demonstrations from {demo_dir}...")
+        demo_data = load_demos_for_training(
+            env_id=env_id,
+            demo_dir=demo_dir,
+            device=device,
+            max_episodes=demo_cfg.get("max_episodes", None),
+            filter_success=demo_cfg.get("filter_success", True)
+        )
+        
+        print(f"Loaded {len(demo_data)} demonstration trajectories")
+        return demo_data
+        
+    except ImportError:
+        print("Warning: Demo loader not available. Install h5py to use demonstrations.")
+        return None
+    except Exception as e:
+        print(f"Warning: Could not load demonstrations: {e}")
+        return None
 
 
 def get_autocast_context(cfg: DictConfig):
@@ -94,12 +130,13 @@ def make_collect_fn(cfg: DictConfig, env):
     ) -> tuple[TrainState, TensorDict, list[dict]]:
         transitions = []
         info_list = []
-        obs = train_state.obs
+        obs, _ = train_state.obs
         critic_obs = train_state.critic_obs
 
         for _ in range(cfg.hyperparameters.num_steps):
             with autocast():
-                norm_obs = train_state.normalizer(obs)
+                # only tuple sometimes
+                norm_obs = train_state.normalizer(obs[0])
                 norm_critic_obs = train_state.critic_normalizer(critic_obs)
                 with torch.inference_mode():
                     pi, _, _, _ = train_state.actor(norm_obs)
@@ -539,7 +576,18 @@ def main(cfg):
     else:
         obs, _ = envs.reset()
         critic_obs = obs
-
+        print("critic_obs:", critic_obs)
+    # # Load demonstration data if configured
+    # demo_data = load_demonstrations(cfg.env, device)
+    # demo_batch_size = 0
+    # demo_weight = 0.0
+    
+    # if demo_data is not None:
+    #     demo_cfg = cfg.env.get("demonstrations", {})
+    #     demo_batch_size = demo_cfg.get("batch_size", 64)
+    #     demo_weight = demo_cfg.get("weight", 1.0)
+    #     print(f"Demo training enabled: batch_size={demo_batch_size}, weight={demo_weight}")
+            
     train_state = TrainState(
         obs=obs,
         critic_obs=critic_obs,
@@ -552,6 +600,8 @@ def main(cfg):
         critic_optimizer=q_optimizer,
         device=device,
         scaler=scaler,
+        # demo_data=demo_data,
+        # demo_batch_size=demo_batch_size,
     )
 
     # print(
@@ -575,6 +625,35 @@ def main(cfg):
         update_actor = torch.compile(update_actor, mode=mode)
         postprocess_fn = torch.compile(postprocess_fn, mode=mode)
         train_state.compile()
+
+    # # Offline training on demonstration data if available
+    # if demo_data is not None:
+    #     demo_cfg = cfg.env.get("demonstrations", {})
+    #     offline_epochs = demo_cfg.get("offline_epochs", 100)
+    #     print(f"Starting offline training for {offline_epochs} epochs...")
+
+    #     # Prepare demo data for training
+    #     if hasattr(demo_data, 'flatten') and demo_data.ndim > 1:
+    #         demo_data_flat = demo_data.flatten(0, -2)
+    #     else:
+    #         demo_data_flat = demo_data
+    #     num_samples = demo_data_flat.shape[0]
+        
+    #     for epoch in range(offline_epochs):
+    #         # Shuffle the demo data
+    #         indices = torch.randperm(num_samples, device=device)
+    #         demo_data_shuffled = demo_data_flat[indices]
+            
+    #         # Train on mini-batches
+    #         for i in range(0, num_samples, demo_batch_size):
+    #             mini_batch = demo_data_shuffled[i:i+demo_batch_size]
+    #             critic_logs_dict = update_critic(mini_batch)
+    #             actor_logs_dict = update_actor(mini_batch)
+            
+    #         if epoch % 10 == 0 or epoch == offline_epochs - 1:
+    #             print(f"Offline epoch {epoch+1}/{offline_epochs} complete.")
+        
+    #     print("Offline training completed. Starting online training...")
 
     # TODO: Support checkpoint loading
     # if cfg.checkpoint_path:
