@@ -130,13 +130,13 @@ def make_collect_fn(cfg: DictConfig, env):
     ) -> tuple[TrainState, TensorDict, list[dict]]:
         transitions = []
         info_list = []
-        obs, _ = train_state.obs
+        obs = train_state.obs
         critic_obs = train_state.critic_obs
 
         for _ in range(cfg.hyperparameters.num_steps):
             with autocast():
                 # only tuple sometimes
-                norm_obs = train_state.normalizer(obs[0])
+                norm_obs = train_state.normalizer(obs)
                 norm_critic_obs = train_state.critic_normalizer(critic_obs)
                 with torch.inference_mode():
                     pi, _, _, _ = train_state.actor(norm_obs)
