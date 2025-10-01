@@ -1,3 +1,4 @@
 type: isaaclab
 name:
 action_bounds: [-1, 1]
+asymmetric_obs: false

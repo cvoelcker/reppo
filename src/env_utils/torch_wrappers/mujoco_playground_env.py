@@ -34,7 +34,7 @@ class PlaygroundEvalEnvWrapper:
             obs = wrapper_torch._jax_to_torch(self.state.obs["state"])
         else:
             obs = wrapper_torch._jax_to_torch(self.state.obs)
-        return obs
+        return obs, {}
 
     def step(self, actions):
         self.state = self.jit_step(self.state, wrapper_torch._torch_to_jax(actions))
@@ -59,8 +59,7 @@ class RandomizeInitialWrapper(wrapper_torch.RSLRLBraxWrapper):
         self.env_state.info["steps"] = jax.random.randint(
             self.key, self.env_state.info["steps"].shape, 0, 1000
         ).astype(jax.numpy.float32)
-        print(obs)
-        return obs
+        return obs, {}
 
     def reset_with_critic_obs(self):
         print("Resetting environment with randomization and critic obs")

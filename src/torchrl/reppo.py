@@ -374,11 +374,10 @@ def make_evaluate_fn(cfg: DictConfig, eval_envs):
         done_masks = torch.zeros(
             num_eval_envs, dtype=torch.bool, device=train_state.device
         )
-
-        if cfg.env.type == "isaaclab" or cfg.env.asymmetric_observation:
+        if cfg.env.type == "isaaclab" or cfg.env.asymmetric_obs:
             obs, _ = eval_envs.reset(random_start_init=False)
         else:
-            obs = eval_envs.reset()
+            obs, _ = eval_envs.reset()
 
         # Run for a fixed number of steps
         for i in range(eval_envs.max_episode_steps):
@@ -538,7 +537,7 @@ def main(cfg):
         obs, critic_obs = envs.reset_with_critic_obs()
         critic_obs = torch.as_tensor(critic_obs, device=device, dtype=torch.float)
     else:
-        obs = envs.reset()
+        obs, _ = envs.reset()
         critic_obs = obs
 
     train_state = TrainState(
@@ -555,14 +554,14 @@ def main(cfg):
         scaler=scaler,
     )
 
-    print(
-        summary(
-            train_state.critic,
-            input_data=(critic_obs[:1], torch.zeros((1, n_act), device=device)),
-            depth=10,
-        )
-    )
-    print(summary(train_state.actor, input_data=(obs[:1],), depth=10))
+    # print(
+    #     summary(
+    #         train_state.critic,
+    #         input_data=(critic_obs[:1], torch.zeros((1, n_act), device=device)),
+    #         depth=10,
+    #     )
+    # )
+    # print(summary(train_state.actor, input_data=(obs[:1],), depth=10))
     # create functions
     collect_fn = make_collect_fn(cfg, envs)
     postprocess_fn = make_postprocess_fn(cfg, envs)

@@ -48,7 +48,8 @@ class ManiSkillWrapper(Wrapper):
         """
         Resets the environment and returns the initial observation.
         """
-        return self.env.reset(seed=seed, options=options)
+        obs, info = self.env.reset(seed=seed, options=options)
+        return obs, info
 
     def step(self, action):
         """

@@ -4,7 +4,7 @@ max_episode_steps: 1000
 reward_scaling: 1.0
 terminate: false
 push_distractions: false
-asymmetric_observation: true
+asymmetric_obs: true
 
 vmin: -10
 vmax:  10

@@ -3,6 +3,7 @@ name:
 max_episode_steps: 1000
 reward_scaling: 0.1
 terminate: true
+asymmetric_obs: false
 
 vmin: 0
 vmax: 200

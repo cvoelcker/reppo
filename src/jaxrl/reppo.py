@@ -868,7 +868,7 @@ def run(cfg: DictConfig, trial: optuna.Trial | None) -> float:
             episode_length=cfg.env.max_episode_steps,
             reward_scale=cfg.env.reward_scaling,
             push_distractions=cfg.env.get("push_distractions", False),
-            asymmetric_observation=cfg.env.get("asymmetric_observation", False),
+            asymmetric_observation=cfg.env.get("asymmetric_obs", False),
         )
     else:
         raise ValueError(f"Unknown environment type: {cfg.env.type}")
