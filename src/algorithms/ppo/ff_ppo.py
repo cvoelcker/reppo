@@ -114,12 +114,11 @@ def make_learner_fn(
             _, log_prob = pi_ent.sample_and_log_prob(sample_shape=(n,), seed=seed)
             return -jnp.mean(log_prob)
 
-        pi = model.actor(minibatch.obs)
 
         if algo_cfg.loss == "rpo":
-            pi = distrax.MultivariateNormalDiag(
-                loc=pi.mean() + minibatch.extras["action_noise"], scale_diag=pi.stddev()
-            )
+            pi = model.actor(minibatch.obs, mean_offset=minibatch.extras["action_noise"])
+        else:
+            pi = model.actor(minibatch.obs)
 
         value = model.critic(minibatch.obs)
         log_prob = pi.log_prob(minibatch.action)
@@ -153,7 +152,7 @@ def make_learner_fn(
                 drift2,
             )
             losses = ratio * advantages - drift
-            mask = 1.0 - minibatch.truncate
+            mask = 1.0 - minibatch.truncated
             actor_loss = -jnp.mean(losses * mask)
             entropy_loss = jnp.mean(estimate_entropy(4, minibatch.extras["key"]))
 

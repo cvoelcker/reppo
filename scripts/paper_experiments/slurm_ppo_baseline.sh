@@ -10,8 +10,8 @@
 #SBATCH --job-name=ppo_val
 #SBATCH --output=slurm_logs/slurm_mjx_op_%A_%a.out
 #SBATCH --error=slurm_logs/slurm_mjx_op_%A_%a.err
-#SBATCH --exclude=kn104,kn115,kn146,kn153
-#SBATCH --array=0-460%20
+#SBATCH --exclude=kn159
+#SBATCH --array=0-460%50
 
 env=(AcrobotSwingup AcrobotSwingupSparse BallInCup CartpoleBalance CartpoleBalanceSparse CartpoleSwingup CartpoleSwingupSparse CheetahRun FingerSpin FingerTurnEasy FingerTurnHard FishSwim HopperHop HopperStand PendulumSwingup ReacherEasy ReacherHard WalkerRun WalkerWalk WalkerStand HumanoidStand HumanoidWalk HumanoidRun)
 
@@ -24,10 +24,11 @@ uv run src/train.py --config-name=ppo_continuous \
     algorithm=$1 \
 	env=mjx_dmc \
     env.name=${env[$((SLURM_ARRAY_TASK_ID%23))]} \
-	tags=[paper_adamw,ppo_paper,$1,$4] \
+	tags=[paper_adamw,ppo_paper2,tanh,$1,$4] \
 	logging=wandb_online \
 	algorithm.total_time_steps=$3 \
 	algorithm.hidden_dim=$2 \
 	algorithm.num_eval=100 \
+	algorithm.use_tanh_gaussian=True \
 	seed=$RANDOM
 

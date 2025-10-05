@@ -74,13 +74,13 @@ class PPONetworks(nnx.Module):
             obs = obs["privileged_state"]
         return self.critic_module(obs).squeeze()
 
-    def actor(self, obs: jax.Array, deterministic: bool = False) -> distrax.Distribution:
+    def actor(self, obs: jax.Array, deterministic: bool = False, mean_offset=0.0) -> distrax.Distribution:
         if self.asymmetric_obs:
             assert (
                 isinstance(obs, dict) and "state" in obs
             ), "State must be provided for actor."
             obs = obs["state"]
-        loc = self.actor_module(obs)
+        loc = self.actor_module(obs) + mean_offset
         if self.discrete_action:
             pi = distrax.Categorical(logits=loc)
         else:
