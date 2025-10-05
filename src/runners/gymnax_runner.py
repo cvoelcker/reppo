@@ -55,7 +55,7 @@ def make_rollout_fn(env: Environment, num_steps: int, num_envs: int) -> RolloutF
     ) -> tuple[Transition, TrainState]:
         # Take a step in the environment
         def step_env(carry, _) -> tuple[tuple, Transition]:
-            key, env_state, train_state, obs = carry
+            key, env_state, train_state, obs, policy = carry
 
             # Select action
             key, act_key, step_key = jax.random.split(key, 3)
@@ -79,6 +79,7 @@ def make_rollout_fn(env: Environment, num_steps: int, num_envs: int) -> RolloutF
                 next_env_state,
                 train_state,
                 next_obs,
+                policy,
             ), transition
 
         # Collect rollout via lax.scan taking steps in the environment
@@ -89,11 +90,12 @@ def make_rollout_fn(env: Environment, num_steps: int, num_envs: int) -> RolloutF
                 train_state.last_env_state,
                 train_state,
                 train_state.last_obs,
+                policy
             ),
             length=num_steps,
         )
         # Aggregate the transitions across all the environments to reset for the next iteration
-        _, last_env_state, train_state, last_obs = rollout_state
+        _, last_env_state, train_state, last_obs, _ = rollout_state
 
         train_state = train_state.replace(
             last_env_state=last_env_state,

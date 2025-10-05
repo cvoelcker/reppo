@@ -25,6 +25,27 @@ import distrax
 logging.basicConfig(level=logging.INFO)
 
 
+class REPPOPolicy(nnx.Module):
+    def __init__(self, base: nnx.Module, normalizer: Normalizer | None, normalization_state, eval: bool, action_space: Space):
+        self.base = base
+        self.normalizer = normalizer
+        self.normalization_state = nnx.data(normalization_state)
+        self._eval_mode = eval
+        self.action_space = action_space
+
+    def __call__(self, key: jax.Array, x: jax.Array, **kwargs) -> distrax.Distribution:
+        if self.normalizer is not None:
+            x = self.normalizer.normalize(self.normalization_state, x)
+        if self._eval_mode:
+            action = self.base.det_action(x)
+        else:
+            pi = self.base(x, **kwargs)
+            action = pi.sample(seed=key)
+        if isinstance(self.action_space, Box):
+            action = action.clip(-0.999, 0.999)
+        return action, {}
+
+
 def make_policy_fn(
     cfg: DictConfig, observation_space: Space, action_space: Space
 ) -> Callable[[REPPOTrainState, bool], Policy]:
@@ -35,22 +56,31 @@ def make_policy_fn(
         normalizer = Normalizer()
         actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
 
-        def policy(key: Key, obs: jax.Array, **kwargs) -> tuple[jax.Array, dict]:
-            if train_state.normalization_state is not None:
-                obs = normalizer.normalize(train_state.normalization_state, obs)
+        policy = REPPOPolicy(
+            base=actor_model,
+            normalizer=normalizer if cfg.normalize_env else None,
+            normalization_state=train_state.normalization_state,
+            eval=eval,
+            action_space=action_space,
+        )
+        policy.eval()
 
-            if eval:
-                action: jax.Array = actor_model.det_action(obs)
-            else:
-                pi = actor_model(obs, scale=offset)
-                action = pi.sample(seed=key)
+        # def policy(key: Key, obs: jax.Array, **kwargs) -> tuple[jax.Array, dict]:
+        #     if train_state.normalization_state is not None:
+        #         obs = normalizer.normalize(train_state.normalization_state, obs)
 
-            if isinstance(action_space, Box):
-                action = action.clip(-0.999, 0.999)
+        #     if eval:
+        #         action: jax.Array = actor_model.det_action(obs)
+        #     else:
+        #         pi = actor_model(obs, scale=offset)
+        #         action = pi.sample(seed=key)
 
-            return action, {}
+        #     if isinstance(action_space, Box):
+        #         action = action.clip(-0.999, 0.999)
 
-        return jax.jit(policy)
+        #     return action, {}
+
+        return policy
 
     return policy_fn
 
@@ -66,14 +96,14 @@ def make_init_fn(
         key, model_key = jax.random.split(key)
         rngs = nnx.Rngs(model_key)
 
-        optim = hydra.utils.instantiate(hparams.optimizer)
+        optim_fn = hydra.utils.instantiate(hparams.optimizer)
 
         if hparams.max_grad_norm is not None:
             tx = optax.chain(
-                optax.clip_by_global_norm(hparams.max_grad_norm), optim
+                optax.clip_by_global_norm(hparams.max_grad_norm), optim_fn
             )
         else:
-            tx = optim
+            tx = optim_fn
 
         if hparams.normalize_env:
             normalizer = Normalizer()
@@ -130,6 +160,7 @@ def make_learner_fn(
         params: nnx.Param, train_state: REPPOTrainState, minibatch: Transition
     ):
         critic_model = nnx.merge(train_state.critic.graphdef, params)
+        critic_model.train()
         critic_output = critic_model(minibatch.obs, minibatch.action)
 
         target_values = minibatch.extras["target_values"]
@@ -192,6 +223,11 @@ def make_learner_fn(
         actor_target_model = nnx.merge(
             train_state.actor.graphdef, train_state.actor_target.params
         )
+
+        # set up models for training with batch norm
+        actor_model.train()
+        critic_target_model.eval()
+        actor_target_model.eval()
         pi = actor_model(minibatch.obs)
         old_pi = actor_target_model(minibatch.obs)
 
@@ -446,6 +482,8 @@ def make_learner_fn(
 
         actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
         critic_model = nnx.merge(train_state.critic.graphdef, train_state.critic.params)
+        actor_model.eval()
+        critic_model.eval()
         critic_output = critic_model(batch.obs, batch.action)
         emb = critic_output["embed"]
         value = critic_output["value"]
