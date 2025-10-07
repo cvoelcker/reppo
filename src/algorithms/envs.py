@@ -4,10 +4,8 @@ import gymnasium
 from gymnax import EnvParams, EnvState
 from gymnax.environments.spaces import Space as GymnaxSpace
 import gymnax
-from mujoco_playground import MjxEnv
 from omegaconf import DictConfig
 from gymnax.environments.environment import Environment
-from brax.envs.base import State as BraxState
 from gymnax.environments.spaces import (
     Discrete as GymnaxDiscrete,
     Box as GymnaxBox,
@@ -127,9 +125,7 @@ def _make_gymnasium_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
         return env
 
     env = gym.vector.SyncVectorEnv([_make for _ in range(cfg.algorithm.num_envs)])
-    eval_env = gym.vector.SyncVectorEnv(
-        [_make for _ in range(cfg.algorithm.num_envs)]
-    )
+    eval_env = gym.vector.SyncVectorEnv([_make for _ in range(cfg.algorithm.num_envs)])
     return EnvSetup(
         env=env,
         eval_env=eval_env,
@@ -139,12 +135,9 @@ def _make_gymnasium_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
 
 
 def _make_maniskill_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
-    import mani_skill.envs
-    from mani_skill.utils import gym_utils
     from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
     from mani_skill.utils.wrappers.record import RecordEpisode
     from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
-    import torch
 
     def make_env(eval: bool = False):
         env_kwargs = cfg.env.kwargs if "kwargs" in cfg.env else {}

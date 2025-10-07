@@ -18,4 +18,4 @@ hostname
 cd /home/$USER/projects/aip-gigor/voelcker/reppo
 source .venv/bin/activate
 
-uv run src/train.py --config-name=reppo_continuous algorithm=reppo env=mjx_dmc env.name=${env[$((SLURM_ARRAY_TASK_ID%23))]} tags=[langevin_test] logging=wandb_online seed=$RANDOM algorithm.num_eval=20 +experiments=mjx_dmc_large_data
+uv run src/train.py --config-name=reppo_continuous algorithm=reppo env=mjx_dmc env.name=${env[$((SLURM_ARRAY_TASK_ID%23))]} tags=[langevin_test,single_chain,small_lr] logging=wandb_online seed=$RANDOM algorithm.num_eval=20 +experiments=mjx_dmc_large_data

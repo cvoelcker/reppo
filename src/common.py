@@ -1,18 +1,12 @@
 import typing
-from typing import Callable, Optional, TypeVar
+from typing import Optional, TypeVar
 
-import gymnasium
 from gymnax import EnvState
 import jax
 from flax import struct
 from flax.struct import PyTreeNode
-from gymnax.environments.environment import Environment, EnvParams
-from jax.random import PRNGKey
 from flax import nnx
-import jax.numpy as jnp
-import numpy as np
 
-from src.algorithms import utils
 
 Config = TypeVar("Config", bound=struct.PyTreeNode)
 Key = jax.Array

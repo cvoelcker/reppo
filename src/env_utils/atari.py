@@ -31,12 +31,14 @@ class RecordEpisodeStatistics(gym.Wrapper):
         for i in np.argwhere(infos["terminated"] & (infos["lives"] == 0)).squeeze(1):
             if "final_info" not in infos:
                 infos["final_info"] = []
-            infos["final_info"].append({
-                "episode": {
-                    "r": self.returned_episode_returns[i],
-                    "l": self.returned_episode_lengths[i],
+            infos["final_info"].append(
+                {
+                    "episode": {
+                        "r": self.returned_episode_returns[i],
+                        "l": self.returned_episode_lengths[i],
+                    }
                 }
-            })
+            )
         return (
             observations,
             rewards,

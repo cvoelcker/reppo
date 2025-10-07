@@ -90,7 +90,7 @@ def make_rollout_fn(env: Environment, num_steps: int, num_envs: int) -> RolloutF
                 train_state.last_env_state,
                 train_state,
                 train_state.last_obs,
-                policy
+                policy,
             ),
             length=num_steps,
         )

@@ -54,6 +54,7 @@ class ContinuousActor(nnx.Module):
             loc=loc, scale_diag=jnp.exp(self.log_std.value)
         )
 
+
 class DiscreteActor(nnx.Module):
     def __init__(
         self,
@@ -69,4 +70,3 @@ class DiscreteActor(nnx.Module):
     def __call__(self, obs: jax.Array) -> distrax.Distribution:
         loc = self.actor_module(obs)
         return distrax.Categorical(logits=loc)
-

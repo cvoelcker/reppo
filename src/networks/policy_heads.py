@@ -1,18 +1,17 @@
 import distrax
 import jax
 import jax.numpy as jnp
-from gymnax.environments.spaces import Space, Box, Discrete
 from flax import nnx
 import math
 
-from src.algorithms import utils
-from src.networks.common import MLP
-
 
 class DiscretePolicyHead(nnx.Module):
-
-
-    def __call__(self, features: jax.Array, deterministic: bool = False, scale: None | jax.Array = None) -> distrax.Categorical | jax.Array:
+    def __call__(
+        self,
+        features: jax.Array,
+        deterministic: bool = False,
+        scale: None | jax.Array = None,
+    ) -> distrax.Categorical | jax.Array:
         if scale is None:
             scale = 1.0
         logits = jax.nn.log_softmax(features, axis=-1)
@@ -21,7 +20,7 @@ class DiscretePolicyHead(nnx.Module):
         else:
             dist = distrax.Categorical(logits=logits / scale)
             return dist
-    
+
 
 class TanhGaussianPolicyHead(nnx.Module):
     def __init__(
@@ -33,7 +32,12 @@ class TanhGaussianPolicyHead(nnx.Module):
         self.fixed_std = fixed_std
         self.std_param = nnx.Param(jnp.ones(1) * math.log(0.6)) if fixed_std else None
 
-    def __call__(self, features: jax.Array, deterministic: bool = False, scale: None | jax.Array = None) -> distrax.Distribution | jax.Array:
+    def __call__(
+        self,
+        features: jax.Array,
+        deterministic: bool = False,
+        scale: None | jax.Array = None,
+    ) -> distrax.Distribution | jax.Array:
         if scale is None:
             scale = 1.0
         mean, log_std = jnp.split(features, 2, axis=-1)
@@ -43,6 +47,8 @@ class TanhGaussianPolicyHead(nnx.Module):
             return jnp.tanh(mean)
         else:
             std = (jnp.exp(log_std) + self.min_std) * scale
-            pi = distrax.Transformed(distrax.Normal(loc=mean, scale=std), distrax.Tanh())
+            pi = distrax.Transformed(
+                distrax.Normal(loc=mean, scale=std), distrax.Tanh()
+            )
             pi = distrax.Independent(pi, reinterpreted_batch_ndims=1)
             return pi

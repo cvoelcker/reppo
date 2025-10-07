@@ -1,10 +1,8 @@
 import jax
 import jax.numpy as jnp
-from gymnax.environments.spaces import Space, Box, Discrete
 from flax import nnx
 
 from src.algorithms import utils
-from src.networks.common import MLP
 
 
 class CategoricalContinuousQNetworkHead(nnx.Module):

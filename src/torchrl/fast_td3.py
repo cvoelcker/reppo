@@ -43,7 +43,6 @@ from torch.amp import GradScaler, autocast
 torch.set_float32_matmul_precision("high")
 
 
-
 def main():
     args = get_args()
     print(args)

@@ -9,6 +9,7 @@ from src.common import InitFn, LearnerFn, PolicyFn
 
 logging.basicConfig(level=logging.INFO)
 
+
 @hydra.main(
     version_base=None,
     config_path="../config/default",
@@ -44,12 +45,8 @@ def main(cfg: DictConfig):
         action_space=env_setup.action_space,
         observation_space=env_setup.observation_space,
     )
-    rollout_fn = hydra.utils.call(cfg.runner.rollout_fn)(
-        env=env_setup.env
-    )
-    eval_fn = hydra.utils.call(cfg.runner.eval_fn)(
-        env=env_setup.eval_env
-    )
+    rollout_fn = hydra.utils.call(cfg.runner.rollout_fn)(env=env_setup.env)
+    eval_fn = hydra.utils.call(cfg.runner.eval_fn)(env=env_setup.eval_env)
     make_train_fn = hydra.utils.call(cfg.runner.train_fn)
     train_fn = make_train_fn(
         env=(env_setup.env, env_setup.eval_env),

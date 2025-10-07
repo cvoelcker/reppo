@@ -1,18 +1,14 @@
 import time
 import distrax
 import logging
-import flax
 import gymnax
 import jax
 import jax.numpy as jnp
 from mujoco_playground import State
-import numpy as np
-from omegaconf import DictConfig
 import wandb
 
 from gymnax.environments.environment import Environment
 from flax import struct
-import gymnasium as gym
 
 
 def describe(values: jnp.ndarray, axis: tuple | int = 0) -> dict[str, jnp.ndarray]:
@@ -158,11 +154,11 @@ def make_log_callback():
         steps.append(metrics["sys/time_step"])
         times.append(metrics["sys/time"])
         metric_history.append(metrics)
-  
+
         # Use pop() with a default value of None in case 'advantages' key doesn't exist
         advantages = metrics.pop("train/advantages", None)
         print_logs(metrics)
-       
+
         if advantages is not None:
             metrics["train/advantages"] = wandb.Histogram(advantages)
         wandb.log(metrics, step=int(metrics["sys/time_step"]))
@@ -194,10 +190,8 @@ def make_log_callback():
                 log_strs.append(f"    {log_item}={metrics[k]:.3f}")
             else:
                 log_strs.append(f"  {k}={metrics[k]:.3f}")
-           
-        logging.info(
-            "\n" + "\n".join(log_strs)
-        )
+
+        logging.info("\n" + "\n".join(log_strs))
 
     return log_callback
 

@@ -1,8 +1,6 @@
-import flax
 from flax import nnx
 import jax
 import jax.numpy as jnp
-from gymnax.environments.spaces import Space, Box, Discrete
 
 
 class UnitBallNorm(nnx.Module):
@@ -72,16 +70,18 @@ class MLP(nnx.Module):
             use_norm=use_norm,
             activation=hidden_activation,
         )
-        self.main_layers = nnx.List([
-            normed_activation_layer(
-                rngs,
-                hidden_dim,
-                hidden_dim,
-                use_norm=use_norm,
-                activation=hidden_activation,
-            )
-            for _ in range(layers - 2)
-        ])
+        self.main_layers = nnx.List(
+            [
+                normed_activation_layer(
+                    rngs,
+                    hidden_dim,
+                    hidden_dim,
+                    use_norm=use_norm,
+                    activation=hidden_activation,
+                )
+                for _ in range(layers - 2)
+            ]
+        )
         self.norm = nnx.LayerNorm(in_features, rngs=rngs)
         self.output_layer = normed_activation_layer(
             rngs,
@@ -128,7 +128,7 @@ class StateActionInput(nnx.Module):
             obs = None
         if self.action_encoder is not None:
             action = self.action_encoder(action)
-        else: 
+        else:
             action = None
 
         if obs is None and action is None:
@@ -137,7 +137,7 @@ class StateActionInput(nnx.Module):
             return obs
         elif obs is None:
             return action
-    
+
         if not self.concatenate:
             return obs, action
         else:

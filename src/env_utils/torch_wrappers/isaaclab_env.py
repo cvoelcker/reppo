@@ -9,7 +9,6 @@ app_launcher = AppLauncher(headless=True)
 simulation_app = app_launcher.app
 
 
-
 class IsaacLabEnv:
     """Wrapper for IsaacLab environments to be compatible with MuJoCo Playground"""
 
