@@ -1,16 +1,29 @@
 from gymnasium import Wrapper
 import jax
+import jax.numpy as jnp
 import numpy as np
 import torch
 
 
-def to_numpy(x):
+def to_jax(x):
     if isinstance(x, np.ndarray):
+        return jnp.array(x)
+    elif isinstance(x, jax.Array):
         return x
     elif isinstance(x, torch.Tensor):
-        return x.cpu().numpy()
+        return jax.dlpack.from_dlpack(torch.utils.dlpack.to_dlpack(x))
     else:
-        return np.array(x)
+        return jax.tree.map(to_jax, x)
+    
+def to_torch(x):
+    if isinstance(x, np.ndarray):
+        return torch.from_numpy(x)
+    elif isinstance(x, torch.Tensor):
+        return x
+    elif isinstance(x, jax.Array):
+        return torch.utils.dlpack.from_dlpack(jax.dlpack.to_dlpack(x))
+    else:
+        raise ValueError(f"Cannot convert type {type(x)} to torch.Tensor")
 
 
 class ManiSkillWrapper(Wrapper):
@@ -85,7 +98,7 @@ class ManiSkillWrapper(Wrapper):
         Resets the environment and returns the initial observation.
         """
         obs, info = self.env.reset(seed=seed, options=options)
-        return jax.tree.map(to_numpy, obs), jax.tree.map(to_numpy, info)
+        return to_jax(obs), to_jax(info)
 
     def step(self, action):
         """
@@ -94,11 +107,11 @@ class ManiSkillWrapper(Wrapper):
         """
         action = torch.from_numpy(action)
         obs, reward, terminated, truncated, info = self.env.step(action)
-        obs = jax.tree.map(to_numpy, obs)
-        reward = to_numpy(reward)
-        terminated = to_numpy(terminated)
-        truncated = to_numpy(truncated)
-        info = jax.tree.map(to_numpy, info)
+        obs = to_jax(obs)
+        reward = to_jax(reward)
+        terminated = to_jax(terminated)
+        truncated = to_jax(truncated)
+        info = to_jax(info)
 
         if "final_info" in info:
             self.returns = (
@@ -129,4 +142,7 @@ class ManiSkillWrapper(Wrapper):
         else:
             done = np.logical_or(terminated, truncated)
             truncated = np.zeros_like(done, dtype=bool)
+        done = to_jax(done)
+        truncated = to_jax(truncated)
+        info = to_jax(info)
         return obs, reward, done, truncated, info

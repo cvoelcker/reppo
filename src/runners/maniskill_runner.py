@@ -30,15 +30,15 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
             action, _ = policy(act_key, obs)
             # Take a step in the environment
             print(type(action))
-            next_obs, reward, done, truncated, info = env.step(np.array(action))
+            next_obs, reward, done, truncated, info = env.step(action)
             print(type(next_obs))
             # Record the transition
             transition = Transition(
-                obs=jnp.array(obs),
-                action=jnp.array(action),
-                reward=jnp.array(reward),
-                done=jnp.array(done),
-                truncated=jnp.array(truncated),
+                obs=obs,
+                action=action,
+                reward=reward,
+                done=done,
+                truncated=truncated,
                 extras={},
             )
             transitions.append(transition)

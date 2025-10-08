@@ -33,10 +33,8 @@ dependencies = [
     "scalene>=1.5.51",
     "torchinfo>=1.8.0",
     "debugpy>=1.8.14",
-    # "pufferlib[atari]>=3.0.0",
-    # "envpool>=0.8.4",
-    # "mani-skill>=3.0.0b21",
     "mani-skill>=3.0.0b21",
+    "tensorflow-probability>=0.25.0",
 ]
 
 [build-system]
