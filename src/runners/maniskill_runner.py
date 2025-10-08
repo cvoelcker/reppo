@@ -48,20 +48,9 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
                 print(
                     f"global_step={train_state.time_steps}, episode_return={info['final_info']['episode']['return'].mean()}, success={info['final_info']['episode']['success_once'].mean()}"
                 )
-                
-                
-                wandb.log(
-                    {
-                        "train/episode_return": np.mean(info["final_info"]["episode"]["return"]),
-                        "train/episode_sucess": np.mean(info["final_info"]["episode"]["success_once"])
-                    },
-                    step=train_state.time_steps,
-                )
-
         transitions = jax.tree.map(lambda *xs: jnp.stack(xs), *transitions)
         train_state = train_state.replace(
             last_obs=obs,
-            last_env_state=None,
             time_steps=train_state.time_steps + num_steps * num_envs,
         )
         return transitions, train_state
