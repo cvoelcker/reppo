@@ -343,7 +343,9 @@ def make_learner_fn(
             loss += jnp.mean(lagrangian_loss)
 
         # for logging
-        real_action_log_prob = old_pi.log_prob(minibatch.action.clip(-0.999, 0.999)).mean()
+        real_action_log_prob = old_pi.log_prob(
+            minibatch.action.clip(-0.999, 0.999)
+        ).mean()
 
         return loss, dict(
             actor_loss=actor_loss,

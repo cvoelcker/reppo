@@ -16,7 +16,8 @@ def to_jax(x):
         return jax.tree.map(to_jax, x)
     else:
         return jnp.array(x)
-    
+
+
 def to_torch(x):
     if isinstance(x, np.ndarray):
         return torch.from_numpy(x)
@@ -117,18 +118,15 @@ class ManiSkillWrapper(Wrapper):
 
         if "final_info" in info:
             self.returns = (
-                info["final_info"]["episode"]["return"]
-                * info["_final_info"]
+                info["final_info"]["episode"]["return"] * info["_final_info"]
                 + (1.0 - info["_final_info"]) * self.returns
             )
             self.episode_len = (
-                info["final_info"]["episode"]["episode_len"]
-                * info["_final_info"]
+                info["final_info"]["episode"]["episode_len"] * info["_final_info"]
                 + (1.0 - info["_final_info"]) * self.episode_len
             )
             self.success = (
-                info["final_info"]["episode"]["success_once"]
-                * info["_final_info"]
+                info["final_info"]["episode"]["success_once"] * info["_final_info"]
                 + (1.0 - info["_final_info"]) * self.success
             )
         info["log_info"] = {

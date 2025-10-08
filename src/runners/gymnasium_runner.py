@@ -55,8 +55,12 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
 
                 wandb.log(
                     {
-                        "train/episode_return": np.mean(info["final_info"]["episode"]["return"]),
-                        "train/episode_sucess": np.mean(info["final_info"]["episode"]["success_once"])
+                        "train/episode_return": np.mean(
+                            info["final_info"]["episode"]["return"]
+                        ),
+                        "train/episode_sucess": np.mean(
+                            info["final_info"]["episode"]["success_once"]
+                        ),
                     },
                     step=train_state.time_steps,
                 )

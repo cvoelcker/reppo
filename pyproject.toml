@@ -35,10 +35,11 @@ dependencies = [
     "debugpy>=1.8.14",
     "mani-skill>=3.0.0b21",
     "tensorflow-probability>=0.25.0",
+]
 
 
 [build-system]
-requires = ["uv_build>=0.8.0,<0.9.0"]
+requires = ["uv_build>=0.8.0,<0.9.0",]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
@@ -125,6 +126,7 @@ docstring-code-format = false
 # This only has an effect when the `docstring-code-format` setting is
 # enabled.
 docstring-code-line-length = "dynamic"
+
 
 [tool.uv.sources]
 playground = { git = "https://github.com/younggyoseo/mujoco_playground" }

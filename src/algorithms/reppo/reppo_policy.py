@@ -170,7 +170,7 @@ def get_langevin_action(
 
     actions = jnp.concatenate([actor_action, random_actions], axis=0)
     actions = jnp.clip(actions, -1 + 1e-4, 1 - 1e-4)
-    
+
     values = critic(state[None].repeat(config.num_mpc_samples, axis=0), actions)[
         "value"
     ]
@@ -185,21 +185,24 @@ def get_langevin_action(
         actions, rand_key = carry
         eta_key, soft_key, rand_key = jax.random.split(rand_key, 3)
 
-        val_grad, lp_grad  = get_grad_action(
+        val_grad, lp_grad = get_grad_action(
             config, prior_pi, critic, state, actions, alpha
         )
 
         # eta = jnp.sqrt(epsilon(config, i)) * eta_scaler * jax.random.normal(eta_key, shape=actions.shape)
         eta = (
-            epsilon(config, i)
-            * alpha
-            * jax.random.normal(eta_key, shape=actions.shape)
+            epsilon(config, i) * alpha * jax.random.normal(eta_key, shape=actions.shape)
         )
         if config.scale_noise_by_act_dim:
             eta = eta / (actions.shape[-1] ** 0.5)
 
         # action_delta = 0.5 * epsilon(config, i) * (val_grad * config.grad_step_size) + eta
-        action_delta = 0.5 * epsilon(config, i) * ((val_grad + alpha * 0.001 * lp_grad) * config.grad_step_size) + eta
+        action_delta = (
+            0.5
+            * epsilon(config, i)
+            * ((val_grad + alpha * 0.001 * lp_grad) * config.grad_step_size)
+            + eta
+        )
         # jax.debug.print("Langevin step {}/{}: eps = {}, max|grad| = {}, max|eta| = {}, max|delta| = {}", i+1, config.mpc_iterations, epsilon(config, i), jnp.abs(grad).max(), jnp.abs(eta).max(), jnp.abs(action_delta).max())
         actions = actions + action_delta
         actions = jnp.clip(actions, -1.0 + 1e-4, 1.0 - 1e-4)
@@ -216,7 +219,9 @@ def get_langevin_action(
         "value"
     ]
     log_probs = jax.vmap(sample_pi.log_prob)(actions)
-    top_softmax = jax.nn.softmax((values + alpha * log_probs) / config.mpc_temperature, axis=0)
+    top_softmax = jax.nn.softmax(
+        (values + alpha * log_probs) / config.mpc_temperature, axis=0
+    )
     top = jax.vmap(
         lambda p: jax.random.choice(act_key, jnp.arange(actions.shape[0]), p=p),
         in_axes=[1],
