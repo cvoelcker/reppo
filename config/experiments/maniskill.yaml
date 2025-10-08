@@ -2,5 +2,6 @@
 algorithm:
   gamma: 0.8
   lmbda: 0.95
+  gamma: 0.8
   num_epochs: 4
   aux_loss_mult: 1.0

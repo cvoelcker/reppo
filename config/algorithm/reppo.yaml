@@ -65,6 +65,7 @@ aux_loss_mult: 1.0
 gradient_estimator: "pathwise_q" # "score_based_gae", "score_based_q", "pathwise_q"
 scale_samples_with_action_d: False
 fixed_actor_std: false
+policy_method: "langevin"
 
 network:
   _target_: src.algorithms.reppo.networks.make_continuous_ff_networks
@@ -76,5 +77,5 @@ learner:
   _target_: src.algorithms.reppo.ff_reppo.make_learner_fn
   _partial_: true
 policy:
-  _target_: src.algorithms.reppo.ff_reppo.make_policy_fn
+  _target_: src.algorithms.reppo.reppo_policy.make_policy_fn
   _partial_: true

@@ -2,7 +2,6 @@ import logging
 import math
 
 import distrax
-import gymnasium
 import hydra
 import jax
 import optax
@@ -242,9 +241,12 @@ def make_learner_fn(
         # Compute mean metrics across mini-batches
         metrics = jax.tree.map(lambda x: x.mean(0), metrics)
         return train_state, metrics
-    
+
     def compute_policy_kl(
-        minibatch: Transition, pi: distrax.Distribution, old_pi: distrax.Distribution, rng
+        minibatch: Transition,
+        pi: distrax.Distribution,
+        old_pi: distrax.Distribution,
+        rng,
     ) -> jax.Array:
         old_pi_action, old_pi_act_log_prob = old_pi.sample_and_log_prob(
             sample_shape=(4,), seed=rng
@@ -255,7 +257,6 @@ def make_learner_fn(
         pi_act_log_prob = pi.log_prob(old_pi_action).mean(0)
         kl = old_pi_act_log_prob - pi_act_log_prob
         return kl
-
 
     def learner_fn(
         key: Key, train_state: PPOTrainState, batch: Transition
@@ -347,7 +348,11 @@ def make_policy_fn(
             model = nnx.merge(train_state.graphdef, train_state.params)
             if eval_mode:
                 action = model.actor(obs, deterministic=True)
-                log_prob = jnp.array([0.0,])
+                log_prob = jnp.array(
+                    [
+                        0.0,
+                    ]
+                )
                 value = model.critic(obs)
             else:
                 pi = model.actor(obs)

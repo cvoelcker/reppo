@@ -1,4 +1,3 @@
-
 from flax import nnx, struct
 from flax.struct import PyTreeNode
 

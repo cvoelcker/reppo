@@ -45,11 +45,14 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
             obs = next_obs
 
             if "final_info" in info:
-                print(
-                    f"global_step={train_state.time_steps}, episode_return={info['final_info']['episode']['return'].mean()}, success={info['final_info']['episode']['success_once'].mean()}"
-                )
-                
-                
+                ep_returns = []
+                for info in info["final_info"]:
+                    if info and "episode" in info:
+                        print(
+                            f"global_step={train_state.time_steps}, episode_return={info['episode']['r']}, episode_length={info['episode']['l']}"
+                        )
+                        ep_returns.append(info["episode"]["r"])
+
                 wandb.log(
                     {
                         "train/episode_return": np.mean(info["final_info"]["episode"]["return"]),

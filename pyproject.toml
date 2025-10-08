@@ -35,7 +35,7 @@ dependencies = [
     "debugpy>=1.8.14",
     "mani-skill>=3.0.0b21",
     "tensorflow-probability>=0.25.0",
-]
+
 
 [build-system]
 requires = ["uv_build>=0.8.0,<0.9.0"]

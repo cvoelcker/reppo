@@ -68,17 +68,19 @@ class PPONetworks(nnx.Module):
 
     def critic(self, obs: jax.Array) -> jax.Array:
         if self.asymmetric_obs:
-            assert (
-                isinstance(obs, dict) and "privileged_state" in obs
-            ), "Privileged state must be provided for asymmetric observations."
+            assert isinstance(obs, dict) and "privileged_state" in obs, (
+                "Privileged state must be provided for asymmetric observations."
+            )
             obs = obs["privileged_state"]
         return self.critic_module(obs).squeeze()
 
-    def actor(self, obs: jax.Array, deterministic: bool = False) -> distrax.Distribution:
+    def actor(
+        self, obs: jax.Array, deterministic: bool = False
+    ) -> distrax.Distribution:
         if self.asymmetric_obs:
-            assert (
-                isinstance(obs, dict) and "state" in obs
-            ), "State must be provided for actor."
+            assert isinstance(obs, dict) and "state" in obs, (
+                "State must be provided for actor."
+            )
             obs = obs["state"]
         loc = self.actor_module(obs)
         if self.discrete_action:
@@ -91,7 +93,9 @@ class PPONetworks(nnx.Module):
                 # pi = distrax.MultivariateNormalDiag(
                 #     loc=loc, scale_diag=loc
                 # )
-                pi = distrax.Transformed(distrax.Normal(loc=loc, scale=std), distrax.Tanh())
+                pi = distrax.Transformed(
+                    distrax.Normal(loc=loc, scale=std), distrax.Tanh()
+                )
                 pi = distrax.Independent(pi, reinterpreted_batch_ndims=1)
             else:
                 if deterministic:
@@ -99,7 +103,7 @@ class PPONetworks(nnx.Module):
                 std = jnp.exp(self.log_std.value)
                 pi = distrax.MultivariateNormalDiag(loc=loc, scale_diag=std)
         return pi
-    
+
 
 class PPOAtariNetworks(nnx.Module):
     def __init__(
@@ -118,14 +122,12 @@ class PPOAtariNetworks(nnx.Module):
                 bias_init=nnx.initializers.zeros_init(),
                 rngs=rngs,
             )
-        
+
         actor_cnn = AtariCNNEncoder(output_dim=hidden_dim, rngs=rngs)
         critic_cnn = AtariCNNEncoder(output_dim=hidden_dim, rngs=rngs)
 
         self.actor_module = nnx.Sequential(
-            actor_cnn,
-            nnx.relu,
-            linear_layer(hidden_dim, action_space.n, scale=0.01)
+            actor_cnn, nnx.relu, linear_layer(hidden_dim, action_space.n, scale=0.01)
         )
 
         self.critic_module = nnx.Sequential(

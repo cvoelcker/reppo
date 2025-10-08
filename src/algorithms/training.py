@@ -1,21 +1,17 @@
 import logging
-import time
 import gymnasium
 from gymnax.environments.environment import Environment
 import jax
 from src.common import (
-    Config,
     EvalFn,
     InitFn,
     Key,
     LearnerFn,
     LogCallback,
-    Policy,
     PolicyFn,
     RolloutFn,
     TrainFn,
     TrainState,
-    Transition,
 )
 from src.algorithms import utils
 import jax.numpy as jnp
@@ -172,8 +168,7 @@ def make_loop_train_fn(
         logging.info(f"Starting training for {num_iterations} iterations.")
         logging.info(f"Train steps per iteration: {train_steps_per_iteration}.")
         logging.info(f"Total time steps: {total_time_steps}.")
-        
-      
+
         step = 0
         for i in range(num_iterations):
             for _ in range(train_steps_per_iteration):

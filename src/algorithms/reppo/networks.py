@@ -1,5 +1,4 @@
 import math
-from typing import Sequence, Union
 
 import distrax
 import jax
@@ -7,7 +6,6 @@ import jax.numpy as jnp
 from flax import nnx
 from omegaconf import DictConfig
 
-from src.algorithms import utils
 from gymnax.environments.spaces import Box, Discrete
 
 from src.networks.encoders import AtariCNNEncoder, MinatarConvNet
@@ -127,7 +125,9 @@ def make_continuous_actor(
         )
     actor = Actor(
         feature_encoder=actor_encoder,
-        policy_head=TanhGaussianPolicyHead(min_std=hparams.actor_min_std, fixed_std=hparams.fixed_actor_std),
+        policy_head=TanhGaussianPolicyHead(
+            min_std=hparams.actor_min_std, fixed_std=hparams.fixed_actor_std
+        ),
         kl_start=hparams.kl_start,
         ent_start=hparams.ent_start,
         asymmetric_obs=cfg.env.get("asymmetric_observation", False),
@@ -228,24 +228,21 @@ def make_discrete_actor(
         actor_encoder = Identity()
         in_features = observation_space.shape[0]
     actor_head = MLP(
-            in_features=in_features,
-            out_features=action_space.n,
-            hidden_dim=hparams.actor_hidden_dim,
-            hidden_activation=nnx.relu,
-            output_activation=None,
-            use_norm=hparams.use_actor_norm,
-            use_output_norm=False,
-            layers=hparams.num_actor_layers,
-            hidden_skip=hparams.use_actor_skip,
-            output_skip=hparams.use_actor_skip,
-            final_layer_scaling=0.01,
-            rngs=rngs,
-        )
+        in_features=in_features,
+        out_features=action_space.n,
+        hidden_dim=hparams.actor_hidden_dim,
+        hidden_activation=nnx.relu,
+        output_activation=None,
+        use_norm=hparams.use_actor_norm,
+        use_output_norm=False,
+        layers=hparams.num_actor_layers,
+        hidden_skip=hparams.use_actor_skip,
+        output_skip=hparams.use_actor_skip,
+        final_layer_scaling=0.01,
+        rngs=rngs,
+    )
     actor = Actor(
-        feature_encoder=nnx.Sequential(
-            actor_encoder,
-            actor_head
-        ),
+        feature_encoder=nnx.Sequential(actor_encoder, actor_head),
         policy_head=DiscretePolicyHead(),
         kl_start=hparams.kl_start,
         ent_start=hparams.ent_start,
