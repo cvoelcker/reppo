@@ -3,6 +3,8 @@ import gymnasium
 import jax
 import numpy as np
 import jax.numpy as jnp
+from collections import defaultdict
+
 from src.common import (
     EvalFn,
     Key,
@@ -24,14 +26,12 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
         obs = train_state.last_obs
         prev_step = train_state.time_steps
         prev_time = time.perf_counter()
-        for _ in range(num_steps):
+        for i in range(num_steps):
             # Select action
             key, act_key = jax.random.split(key)
             action, _ = policy(act_key, obs)
             # Take a step in the environment
-            print(type(action))
             next_obs, reward, done, truncated, info = env.step(action)
-            print(type(next_obs))
             # Record the transition
             transition = Transition(
                 obs=obs,
@@ -46,7 +46,7 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
 
             if "final_info" in info:
                 print(
-                    f"global_step={train_state.time_steps}, episode_return={info['final_info']['episode']['return'].mean()}, success={info['final_info']['episode']['success_once'].mean()}"
+                    f"global_step={train_state.time_steps + i * num_envs}, episode_return={info['final_info']['episode']['return'].mean()}, success={info['final_info']['episode']['success_once'].mean()}"
                 )
         transitions = jax.tree.map(lambda *xs: jnp.stack(xs), *transitions)
         train_state = train_state.replace(
@@ -67,7 +67,7 @@ def make_eval_fn(env: gymnasium.Env, max_episode_steps: int) -> EvalFn:
         for _ in range(max_episode_steps):
             key, act_key = jax.random.split(key)
             action, _ = policy(act_key, obs)
-            next_obs, reward, terminated, truncated, infos = env.step(np.array(action))
+            next_obs, reward, terminated, truncated, infos = env.step(action)
             if "final_info" in infos:
                 mask = infos["_final_info"]
                 num_episodes += mask.sum()

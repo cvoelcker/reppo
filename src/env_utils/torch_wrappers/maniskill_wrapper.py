@@ -12,8 +12,10 @@ def to_jax(x):
         return x
     elif isinstance(x, torch.Tensor):
         return jax.dlpack.from_dlpack(torch.utils.dlpack.to_dlpack(x))
-    else:
+    elif isinstance(x, dict) or isinstance(x, list):
         return jax.tree.map(to_jax, x)
+    else:
+        return jnp.array(x)
     
 def to_torch(x):
     if isinstance(x, np.ndarray):
@@ -105,7 +107,7 @@ class ManiSkillWrapper(Wrapper):
         Takes a step in the environment with the given action.
         Returns the next observation, reward, done, and info.
         """
-        action = torch.from_numpy(action)
+        action = to_torch(action)
         obs, reward, terminated, truncated, info = self.env.step(action)
         obs = to_jax(obs)
         reward = to_jax(reward)

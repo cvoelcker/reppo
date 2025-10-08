@@ -1,5 +1,5 @@
 rollout_fn:
-  _target_: src.runners.maniskill.make_rollout_fn
+  _target_: src.runners.maniskill_runner.make_rollout_fn
   _partial_: true
   num_steps: ${algorithm.num_steps}
   num_envs: ${algorithm.num_envs}
