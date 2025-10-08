@@ -57,7 +57,7 @@ class LangevinConfig:
     scale_noise_by_act_dim: bool = False
 
     # MPC params
-    mpc_iterations: int = 5
+    mpc_iterations: int = 10
     num_mpc_samples: int = 1
     num_policy_mpc_samples: int = 1
     mpc_temperature: float = 0.5
@@ -150,8 +150,9 @@ def get_langevin_action(
     rand_key, act_key = jax.random.split(rand_key)
 
     rand_key, act_key = jax.random.split(rand_key)
-    pi = actor(state)
-    actor_action, log_probs = pi.sample_and_log_prob(
+    sample_pi = actor(state)
+    prior_pi = actor(state, scale=1.0)
+    actor_action, log_probs = sample_pi.sample_and_log_prob(
         sample_shape=(config.num_policy_mpc_samples,), seed=act_key
     )
 
@@ -173,7 +174,7 @@ def get_langevin_action(
     values = critic(state[None].repeat(config.num_mpc_samples, axis=0), actions)[
         "value"
     ]
-    log_probs = jax.vmap(pi.log_prob)(actions)
+    log_probs = jax.vmap(sample_pi.log_prob)(actions)
 
     # jax.debug.print("Initial action value: {}", values.mean(), ordered=True)
     # jax.debug.print(
@@ -185,12 +186,12 @@ def get_langevin_action(
         eta_key, soft_key, rand_key = jax.random.split(rand_key, 3)
 
         val_grad, lp_grad  = get_grad_action(
-            config, pi, critic, state, actions, alpha
+            config, prior_pi, critic, state, actions, alpha
         )
 
         # eta = jnp.sqrt(epsilon(config, i)) * eta_scaler * jax.random.normal(eta_key, shape=actions.shape)
         eta = (
-            jnp.sqrt(epsilon(config, i))
+            epsilon(config, i)
             * alpha
             * jax.random.normal(eta_key, shape=actions.shape)
         )
@@ -214,7 +215,7 @@ def get_langevin_action(
     values = critic(state[None].repeat(config.num_mpc_samples, axis=0), actions)[
         "value"
     ]
-    log_probs = jax.vmap(pi.log_prob)(actions)
+    log_probs = jax.vmap(sample_pi.log_prob)(actions)
     top_softmax = jax.nn.softmax((values + alpha * log_probs) / config.mpc_temperature, axis=0)
     top = jax.vmap(
         lambda p: jax.random.choice(act_key, jnp.arange(actions.shape[0]), p=p),

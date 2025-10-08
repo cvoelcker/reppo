@@ -36,6 +36,7 @@ dependencies = [
     # "pufferlib[atari]>=3.0.0",
     # "envpool>=0.8.4",
     # "mani-skill>=3.0.0b21",
+    "jax>=0.7.1",
 ]
 
 [build-system]
