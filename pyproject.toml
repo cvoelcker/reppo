@@ -8,13 +8,13 @@ dependencies = [
     "black>=25.1.0",
     "brax>=0.12.1",
     "distrax>=0.1.5",
-    "flax>=0.10.3",
+    "flax>=0.9",
     "gymnax>=0.0.8",
     "hydra-core>=1.3.2",
     "hydra-submitit-launcher>=1.2.0",
     "jax-tqdm>=0.3.1",
-    "jax[cuda12]==0.7.2 ; sys_platform == 'linux'",
-    "jax==0.7.2 ; sys_platform == 'darwin'",
+    "jax[cuda12]>=0.5 ; sys_platform == 'linux'",
+    "jax>=0.5 ; sys_platform == 'darwin'",
     "matplotlib>=3.10.0",
     "optax>=0.2.4",
     "optuna-integration>=4.3.0",
@@ -36,6 +36,7 @@ dependencies = [
     # "pufferlib[atari]>=3.0.0",
     # "envpool>=0.8.4",
     # "mani-skill>=3.0.0b21",
+    "mani-skill>=3.0.0b21",
 ]
 
 [build-system]

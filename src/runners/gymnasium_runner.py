@@ -29,7 +29,9 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
             key, act_key = jax.random.split(key)
             action, _ = policy(act_key, obs)
             # Take a step in the environment
+            print(type(action))
             next_obs, reward, done, truncated, info = env.step(np.array(action))
+            print(type(next_obs))
             # Record the transition
             transition = Transition(
                 obs=jnp.array(obs),
@@ -43,16 +45,16 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
             obs = next_obs
 
             if "final_info" in info:
-                ep_returns = []
-                for info in info["final_info"]:
-                    if info and "episode" in info:
-                        print(
-                            f"global_step={train_state.time_steps}, episode_return={info['episode']['r']}, episode_length={info['episode']['l']}"
-                        )
-                        ep_returns.append(info["episode"]["r"])
+                print(
+                    f"global_step={train_state.time_steps}, episode_return={info['final_info']['episode']['return'].mean()}, success={info['final_info']['episode']['success_once'].mean()}"
+                )
+                
                 
                 wandb.log(
-                    {"train/episode_return": np.mean(ep_returns)},
+                    {
+                        "train/episode_return": np.mean(info["final_info"]["episode"]["return"]),
+                        "train/episode_sucess": np.mean(info["final_info"]["episode"]["success_once"])
+                    },
                     step=train_state.time_steps,
                 )
 
