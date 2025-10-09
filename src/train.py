@@ -16,6 +16,7 @@ logging.basicConfig(level=logging.INFO)
     config_name="reppo_continuous.yaml",
 )
 def main(cfg: DictConfig):
+    fcfg = fix_cfg(cfg)
     OmegaConf.resolve(cfg)
     logging.info("\n" + OmegaConf.to_yaml(cfg))
     wandb.init(
