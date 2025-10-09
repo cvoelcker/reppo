@@ -35,6 +35,7 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
             # Record the transition
             transition = Transition(
                 obs=jnp.array(obs),
+                next_obs=jnp.array(next_obs),
                 action=jnp.array(action),
                 reward=jnp.array(reward),
                 done=jnp.array(done),

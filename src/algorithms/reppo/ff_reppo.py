@@ -495,7 +495,7 @@ def make_learner_fn(
                 batch.extras["value"][-1],
                 jnp.zeros_like(batch.extras["value"][-1]),
                 jnp.ones_like(batch.truncated[0]),
-                batch.extras["final_value"][-1],
+                batch.extras["policy_value"][-1],
                 jnp.zeros_like(batch.extras["importance_weight"][0]),
             ),
             xs=batch,
@@ -514,25 +514,16 @@ def make_learner_fn(
         critic_model = nnx.merge(train_state.critic.graphdef, train_state.critic.params)
         actor_model.eval()
         critic_model.eval()
-        critic_output = critic_model(batch.obs, batch.action)
-        emb = critic_output["embed"]
+        action, log_probs = actor_model(batch.next_obs).sample_and_log_prob()
+        critic_output = critic_model(batch.next_obs, action)
         value = critic_output["value"]
-        og_pi = actor_model(batch.obs)
-        pi = actor_model(batch.obs, scale=offset)
+        next_emb = critic_output["embed"]
+        og_pi = actor_model(batch.next_obs)
         key, act_key = jax.random.split(key)
 
-        last_action, last_log_prob = actor_model(last_obs).sample_and_log_prob(
-            seed=act_key
-        )
-        last_critic_output = critic_model(last_obs, last_action)
-        last_emb = last_critic_output["embed"]
-        last_value = last_critic_output["value"]
-
-        log_probs = pi.log_prob(batch.action.clip(-0.999, 0.999))
-        next_log_prob = jnp.concatenate([log_probs[1:], last_log_prob[None]], axis=0)
 
         soft_reward = (
-            batch.reward - hparams.gamma * next_log_prob * actor_model.temperature()
+            batch.reward - hparams.gamma * log_probs * actor_model.temperature()
         )
 
         raw_importance_weight = jnp.nan_to_num(
@@ -548,6 +539,7 @@ def make_learner_fn(
             num_samples = 8 * d
         else:
             num_samples = 8
+        pi = actor_model(batch.obs)
         actions = pi.sample(
             seed=act_key, sample_shape=(num_samples,)
         )  # WARNING: magic number
@@ -555,20 +547,11 @@ def make_learner_fn(
         obs = jnp.repeat(batch.obs[None, ...], actions.shape[0], axis=0)
         policy_value = critic_model(obs, actions)["value"].mean(0)
 
-        # final_value
-        actions = actor_model(last_obs).sample(
-            seed=act_key, sample_shape=(num_samples,)
-        )  # WARNING: magic number
-        actions = jnp.clip(actions, -0.999, 0.999)
-        obs = jnp.repeat(last_obs[None, ...], actions.shape[0], axis=0)
-        final_value = critic_model(obs, actions)["value"].mean(0)
-
         extras = {
             "soft_reward": soft_reward * cfg.env.get("reward_scaling", 1.0),
-            "value": jnp.concatenate([value[1:], last_value[None]], axis=0),
+            "value": value,
             "policy_value": policy_value,
-            "final_value": final_value[None, ...].repeat(batch.reward.shape[0], axis=0),
-            "next_emb": jnp.concatenate([emb[1:], last_emb[None]], axis=0),
+            "next_emb": next_emb,
             "importance_weight": importance_weight,
             "log_prob": log_probs,
         }

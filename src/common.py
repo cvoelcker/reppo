@@ -23,6 +23,7 @@ class TrainState(nnx.TrainState):
 
 class Transition(struct.PyTreeNode):
     obs: jax.Array
+    next_obs: jax.Array
     action: jax.Array
     reward: jax.Array
     done: jax.Array

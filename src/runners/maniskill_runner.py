@@ -13,6 +13,7 @@ from src.common import (
     TrainState,
     Transition,
 )
+from src.env_utils.torch_wrappers.maniskill_wrapper import to_jax
 
 
 def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> RolloutFn:
@@ -31,9 +32,14 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
             action, _ = policy(act_key, obs)
             # Take a step in the environment
             next_obs, reward, done, truncated, info = env.step(action)
+            if "final_info" in info:
+                next_obs = jnp.where(
+                    truncated, to_jax(info["final_info"]["obs"]), next_obs
+                )
             # Record the transition
             transition = Transition(
                 obs=obs,
+                next_obs=next_obs,
                 action=action,
                 reward=reward,
                 done=done,

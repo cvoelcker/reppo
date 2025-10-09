@@ -68,6 +68,7 @@ def make_rollout_fn(env: Environment, num_steps: int, num_envs: int) -> RolloutF
             # Record the transition
             transition = Transition(
                 obs=obs,
+                next_obs=next_obs,
                 action=action,
                 reward=reward,
                 done=done,
