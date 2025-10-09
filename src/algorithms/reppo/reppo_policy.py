@@ -27,7 +27,7 @@ class REPPOPolicy(nnx.Module):
     ):
         self.base = base
         self.normalizer = normalizer
-        self.normalization_state = nnx.data(normalization_state)
+        self.normalization_state = normalization_state
         self._eval_mode = eval
         self.action_space = action_space
 
@@ -81,7 +81,7 @@ class LangevinPolicy(nnx.Module):
         self.actor = actor
         self.critic = critic
         self.normalizer = normalizer
-        self.normalization_state = nnx.data(normalization_state)
+        self.normalization_state = normalization_state
         self.action_space = action_space
         self.config = config
         self._eval_mode = eval
@@ -189,9 +189,9 @@ def get_langevin_action(
             config, prior_pi, critic, state, actions, alpha
         )
 
-        # eta = jnp.sqrt(epsilon(config, i)) * eta_scaler * jax.random.normal(eta_key, shape=actions.shape)
         eta = (
-            epsilon(config, i) * alpha * jax.random.normal(eta_key, shape=actions.shape)
+            jnp.sqrt(epsilon(config, i) * alpha)
+            * jax.random.normal(eta_key, shape=actions.shape)
         )
         if config.scale_noise_by_act_dim:
             eta = eta / (actions.shape[-1] ** 0.5)
@@ -261,6 +261,6 @@ def make_policy_fn(
             )
         policy.eval()
 
-        return policy
+        return jax.jit(policy)
 
     return policy_fn

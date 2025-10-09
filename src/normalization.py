@@ -62,5 +62,5 @@ class Normalizer:
         self, state: NormalizationState, tree: struct.PyTreeNode
     ) -> struct.PyTreeNode:
         return jax.tree.map(
-            lambda x, m, v: (x - m) / jnp.sqrt(v + 1e-8), tree, state.mean, state.var
+            lambda x, m, v: (x - m) / jnp.sqrt(v + 1e-2), tree, state.mean, state.var
         )

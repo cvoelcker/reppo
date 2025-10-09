@@ -142,7 +142,9 @@ def make_loop_train_fn(
         make_rollout_fn as make_gymnasium_rollout_fn,
     )
 
-    train_log_interval = int((total_time_steps / (num_steps * num_envs)) // num_eval)
+    train_log_interval = (
+        int((total_time_steps / (num_steps * num_envs)) // num_eval) // 4
+    )
 
     if isinstance(env, tuple):
         env, eval_env = env

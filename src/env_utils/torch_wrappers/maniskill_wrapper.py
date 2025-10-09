@@ -11,7 +11,7 @@ def to_jax(x):
     elif isinstance(x, jax.Array):
         return x
     elif isinstance(x, torch.Tensor):
-        return jax.dlpack.from_dlpack(torch.utils.dlpack.to_dlpack(x))
+        return jax.dlpack.from_dlpack(torch.utils.dlpack.to_dlpack(x.contiguous()))
     elif isinstance(x, dict) or isinstance(x, list):
         return jax.tree.map(to_jax, x)
     else:

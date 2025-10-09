@@ -13,7 +13,6 @@ from src.common import (
     TrainState,
     Transition,
 )
-import wandb
 
 
 def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> RolloutFn:
@@ -43,16 +42,18 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
             )
             transitions.append(transition)
             obs = next_obs
+            # print(info)
+            # if "final_info" in info:
+            #     print(
+            #         f"global_step={train_state.time_steps + i * num_envs}, episode_return={info['final_info']['episode']['return'].mean()}, success={info['final_info']['episode']['success_once'].mean()}, steps: {info['log_info']['episode_len']}"
+            #     )
 
-            if "final_info" in info:
-                print(
-                    f"global_step={train_state.time_steps + i * num_envs}, episode_return={info['final_info']['episode']['return'].mean()}, success={info['final_info']['episode']['success_once'].mean()}"
-                )
         transitions = jax.tree.map(lambda *xs: jnp.stack(xs), *transitions)
         train_state = train_state.replace(
             last_obs=obs,
             time_steps=train_state.time_steps + num_steps * num_envs,
         )
+
         return transitions, train_state
 
     return collect_rollout
@@ -64,7 +65,7 @@ def make_eval_fn(env: gymnasium.Env, max_episode_steps: int) -> EvalFn:
         obs, _ = env.reset()
         metrics = defaultdict(list)
         num_episodes = 0
-        for _ in range(max_episode_steps):
+        for _ in range(max_episode_steps + 1):
             key, act_key = jax.random.split(key)
             action, _ = policy(act_key, obs)
             next_obs, reward, terminated, truncated, infos = env.step(action)

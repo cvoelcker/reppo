@@ -19,7 +19,7 @@ def normed_activation_layer(
         )
     ]
     if use_norm:
-        layers.append(nnx.RMSNorm(out_features, rngs=rngs))
+        layers.append(nnx.LayerNorm(out_features, rngs=rngs))
     if activation is not None:
         layers.append(activation)
     return nnx.Sequential(*layers)
@@ -69,18 +69,16 @@ class MLP(nnx.Module):
             use_norm=use_norm,
             activation=hidden_activation,
         )
-        self.main_layers = nnx.List(
-            [
-                normed_activation_layer(
-                    rngs,
-                    hidden_dim,
-                    hidden_dim,
-                    use_norm=use_norm,
-                    activation=hidden_activation,
-                )
-                for _ in range(layers - 2)
-            ]
-        )
+        self.main_layers = [
+            normed_activation_layer(
+                rngs,
+                hidden_dim,
+                hidden_dim,
+                use_norm=use_norm,
+                activation=hidden_activation,
+            )
+            for _ in range(layers - 2)
+        ]
         self.norm = nnx.LayerNorm(in_features, rngs=rngs)
         self.output_layer = normed_activation_layer(
             rngs,
