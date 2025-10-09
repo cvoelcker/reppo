@@ -20,6 +20,8 @@ from src.common import (
 from src.algorithms import utils
 import jax.numpy as jnp
 
+from src.env_utils.torch_wrappers.maniskill_wrapper import to_jax
+
 
 def make_scan_train_fn(
     env: Environment | tuple[Environment, Environment],
@@ -29,6 +31,7 @@ def make_scan_train_fn(
     num_eval: int,
     num_seeds: int,
     max_episode_steps: int,
+    stochastic_eval: bool,
     init_fn: InitFn,
     policy_fn: PolicyFn,
     learner_fn: LearnerFn,
@@ -83,7 +86,7 @@ def make_scan_train_fn(
             xs=jax.random.split(train_key, eval_interval),
         )
         train_metrics = jax.tree.map(lambda x: x[-1], train_metrics)
-        policy = policy_fn(train_state, True)
+        policy = policy_fn(train_state, not stochastic_eval)
         eval_metrics = eval_fn(eval_key, policy)
         metrics = {
             **utils.prefix_dict("train", train_metrics),
@@ -133,8 +136,8 @@ def make_loop_train_fn(
     num_steps: int,
     num_envs: int,
     num_eval: int,
-    train_log_interval: int,
     max_episode_steps: int,
+    stochastic_eval: bool,
     init_fn: InitFn,
     policy_fn: PolicyFn,
     learner_fn: LearnerFn,
@@ -146,6 +149,7 @@ def make_loop_train_fn(
         make_eval_fn as make_gymnasium_eval_fn,
         make_rollout_fn as make_gymnasium_rollout_fn,
     )
+    train_log_interval = int((total_time_steps / (num_steps * num_envs)) // num_eval)
 
     if isinstance(env, tuple):
         env, eval_env = env
@@ -167,7 +171,7 @@ def make_loop_train_fn(
         state = init_fn(init_key)
         obs, _ = env.reset()
         state = state.replace(
-            last_obs=jax.tree.map(jnp.array, obs), last_env_state=None
+            last_obs=to_jax(obs), last_env_state=None
         )
         logging.info(f"Starting training for {num_iterations} iterations.")
         logging.info(f"Train steps per iteration: {train_steps_per_iteration}.")
@@ -191,7 +195,7 @@ def make_loop_train_fn(
                 if step % train_log_interval == 0:
                     log_callback(state, utils.prefix_dict("train", train_metrics))
                 step += 1
-            policy = policy_fn(state, True)
+            policy = policy_fn(state, not stochastic_eval)
             key, eval_key = jax.random.split(key)
             eval_metrics = eval_fn(eval_key, policy)
             state = state.replace(iteration=state.iteration + 1)
