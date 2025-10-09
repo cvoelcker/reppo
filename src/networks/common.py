@@ -15,7 +15,6 @@ def normed_activation_layer(
         nnx.Linear(
             in_features=in_features,
             out_features=out_features,
-            kernel_init=nnx.initializers.orthogonal(scale=scale),
             rngs=rngs,
         )
     ]
