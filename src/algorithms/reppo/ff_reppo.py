@@ -98,6 +98,7 @@ def make_init_fn(
     action_space: Space,
 ) -> InitFn:
     hparams = cfg.algorithm
+    print(action_space.shape)
 
     def init(key: Key):
         key, model_key = jax.random.split(key)
@@ -159,7 +160,8 @@ def make_learner_fn(
     normalizer = Normalizer()
     hparams = cfg.algorithm
     discrete_actions = isinstance(action_space, Discrete)
-    d = action_space.shape[0] if not discrete_actions else action_space.n
+    d = action_space.shape[-1] if not discrete_actions else action_space.n
+    print(d)
 
     def critic_loss_fn(
         params: nnx.Param, train_state: REPPOTrainState, minibatch: Transition
