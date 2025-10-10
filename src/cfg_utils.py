@@ -3,7 +3,6 @@ from omegaconf import OmegaConf
 
 
 def fix_cfg(cfg: DictConfig) -> DictConfig:
-
     # Convert to standard dict and back to resolve interpolations
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
 
@@ -12,12 +11,11 @@ def fix_cfg(cfg: DictConfig) -> DictConfig:
         import gymnasium as gym
         import mani_skill.envs  # noqa: F401
         from mani_skill.utils import gym_utils
+
         env_kwargs = cfg.env.kwargs if "kwargs" in cfg.env else {}
         if cfg.env.control_mode is not None:
             env_kwargs["control_mode"] = cfg.env.control_mode
-        reconfiguration_freq = (
-            None
-        )
+        reconfiguration_freq = None
         envs = gym.make(
             cfg.env.name,
             num_envs=cfg.algorithm.num_envs,
@@ -31,6 +29,6 @@ def fix_cfg(cfg: DictConfig) -> DictConfig:
 
         cfg_dict["algorithm"]["gamma"] = 1.0 - 10.0 / max_episode_steps
 
-        del(envs)
+        del envs
     cfg = OmegaConf.create(cfg_dict)
     return cfg

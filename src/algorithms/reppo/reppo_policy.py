@@ -189,9 +189,8 @@ def get_langevin_action(
             config, prior_pi, critic, state, actions, alpha
         )
 
-        eta = (
-            jnp.sqrt(epsilon(config, i) * alpha)
-            * jax.random.normal(eta_key, shape=actions.shape)
+        eta = jnp.sqrt(epsilon(config, i) * alpha) * jax.random.normal(
+            eta_key, shape=actions.shape
         )
         if config.scale_noise_by_act_dim:
             eta = eta / (actions.shape[-1] ** 0.5)

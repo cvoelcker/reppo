@@ -145,6 +145,7 @@ def make_loop_train_fn(
         make_eval_fn as make_gymnasium_eval_fn,
         make_rollout_fn as make_gymnasium_rollout_fn,
     )
+
     train_log_interval = int((total_time_steps / (num_steps * num_envs)) // num_eval)
 
     train_log_interval = (
@@ -170,9 +171,7 @@ def make_loop_train_fn(
         key, init_key = jax.random.split(key)
         state = init_fn(init_key)
         obs, _ = env.reset()
-        state = state.replace(
-            last_obs=to_jax(obs), last_env_state=None
-        )
+        state = state.replace(last_obs=to_jax(obs), last_env_state=None)
         logging.info(f"Starting training for {num_iterations} iterations.")
         logging.info(f"Train steps per iteration: {train_steps_per_iteration}.")
         logging.info(f"Total time steps: {total_time_steps}.")

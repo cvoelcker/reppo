@@ -204,8 +204,8 @@ def make_learner_fn(
         )
         critic_loss = jnp.mean(critic_loss)
         loss = jnp.mean(
-            (1.0 - minibatch.truncated) *
-           (critic_update_loss + hparams.aux_loss_mult * aux_loss)
+            (1.0 - minibatch.truncated)
+            * (critic_update_loss + hparams.aux_loss_mult * aux_loss)
         )
         return loss, dict(
             value_loss=critic_loss,
@@ -508,8 +508,11 @@ def make_learner_fn(
         critic_model = nnx.merge(train_state.critic.graphdef, train_state.critic.params)
         actor_model.eval()
         critic_model.eval()
-        action, log_probs = actor_model(batch.next_obs).sample_and_log_prob(seed=act1_key)
-        critic_output = critic_model(batch.next_obs, action)
+
+        actions, log_probs = actor_model(batch.next_obs).sample_and_log_prob(
+            seed=act1_key
+        )
+        critic_output = critic_model(batch.next_obs, actions)
         value = critic_output["value"]
         next_emb = critic_output["embed"]
 
@@ -547,7 +550,10 @@ def make_learner_fn(
                 train_state.normalization_state, batch.obs
             )
             batch = batch.replace(
-                obs=normalizer.normalize(train_state.normalization_state, batch.obs)
+                obs=normalizer.normalize(train_state.normalization_state, batch.obs),
+                next_obs=normalizer.normalize(
+                    train_state.normalization_state, batch.next_obs
+                ),
             )
             train_state = train_state.replace(normalization_state=new_norm_state)
 
