@@ -261,6 +261,6 @@ def make_policy_fn(
             )
         policy.eval()
 
-        return jax.jit(policy)
+        return nnx.jit(policy)
 
     return policy_fn
