@@ -18,4 +18,4 @@ hostname
 cd /home/$USER/projects/aip-gigor/voelcker/reppo_maniskill/reppo
 source .venv/bin/activate
 
-uv run src/train.py --config-name=reppo_maniskill algorithm=reppo env=maniskill env.name=${env[$((SLURM_ARRAY_TASK_ID%8))]} tags=[maniskill2,langevin_sqrt] logging=wandb_online seed=$RANDOM +experiments=maniskill algorithm.policy_method=langevin
+uv run src/train.py --config-name=reppo_maniskill algorithm=reppo env=maniskill env.name=${env[$((SLURM_ARRAY_TASK_ID%8))]} tags=[maniskill4,langevin_sqrt] logging=wandb_online seed=$RANDOM +experiments=maniskill algorithm.policy_method=langevin

@@ -32,9 +32,9 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
             action, _ = policy(act_key, obs)
             # Take a step in the environment
             next_obs, reward, done, truncated, info = env.step(action)
-            if "final_info" in info:
+            if "final_observation" in info:
                 next_obs = jnp.where(
-                    truncated, to_jax(info["final_info"]["obs"]), next_obs
+                    truncated[:, None], to_jax(info["final_observation"]), next_obs
                 )
             # Record the transition
             transition = Transition(
@@ -48,11 +48,6 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
             )
             transitions.append(transition)
             obs = next_obs
-            # print(info)
-            # if "final_info" in info:
-            #     print(
-            #         f"global_step={train_state.time_steps + i * num_envs}, episode_return={info['final_info']['episode']['return'].mean()}, success={info['final_info']['episode']['success_once'].mean()}, steps: {info['log_info']['episode_len']}"
-            #     )
 
         transitions = jax.tree.map(lambda *xs: jnp.stack(xs), *transitions)
         train_state = train_state.replace(

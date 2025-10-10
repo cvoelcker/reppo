@@ -204,8 +204,8 @@ def make_learner_fn(
         )
         critic_loss = jnp.mean(critic_loss)
         loss = jnp.mean(
-            (1.0 - minibatch.truncated)
-            * (critic_update_loss + hparams.aux_loss_mult * aux_loss)
+            (1.0 - minibatch.truncated) *
+           (critic_update_loss + hparams.aux_loss_mult * aux_loss)
         )
         return loss, dict(
             value_loss=critic_loss,
@@ -462,7 +462,7 @@ def make_learner_fn(
 
     def nstep_lambda(batch: Transition):
         def loop(carry: tuple[jax.Array, ...], transition: Transition):
-            lambda_return, gae, truncated, next_value, importance_weight = carry
+            lambda_return, gae, truncated, next_value = carry
 
             # combine importance_weights with TD lambda
             done = transition.done
@@ -486,7 +486,6 @@ def make_learner_fn(
                 gae,
                 truncated,
                 policy_value,
-                transition.extras["importance_weight"],
             ), (lambda_return, gae)
 
         _, (target_values, target_advs) = jax.lax.scan(
@@ -496,7 +495,6 @@ def make_learner_fn(
                 jnp.zeros_like(batch.extras["value"][-1]),
                 jnp.ones_like(batch.truncated[0]),
                 batch.extras["policy_value"][-1],
-                jnp.zeros_like(batch.extras["importance_weight"][0]),
             ),
             xs=batch,
             reverse=True,
@@ -504,34 +502,19 @@ def make_learner_fn(
         return target_values, target_advs
 
     def compute_extras(key: Key, train_state: REPPOTrainState, batch: Transition):
-        offset = None
-
-        last_obs = train_state.last_obs
-        if hparams.normalize_env:
-            last_obs = normalizer.normalize(train_state.normalization_state, last_obs)
+        key, act1_key, act2_key = jax.random.split(key, 3)
 
         actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
         critic_model = nnx.merge(train_state.critic.graphdef, train_state.critic.params)
         actor_model.eval()
         critic_model.eval()
-        action, log_probs = actor_model(batch.next_obs).sample_and_log_prob()
+        action, log_probs = actor_model(batch.next_obs).sample_and_log_prob(seed=act1_key)
         critic_output = critic_model(batch.next_obs, action)
         value = critic_output["value"]
         next_emb = critic_output["embed"]
-        og_pi = actor_model(batch.next_obs)
-        key, act_key = jax.random.split(key)
-
 
         soft_reward = (
             batch.reward - hparams.gamma * log_probs * actor_model.temperature()
-        )
-
-        raw_importance_weight = jnp.nan_to_num(
-            og_pi.log_prob(batch.action) - pi.log_prob(batch.action),
-            nan=jnp.log(hparams.lmbda_min),
-        )
-        importance_weight = jnp.clip(
-            raw_importance_weight, min=jnp.log(hparams.lmbda_min), max=jnp.log(1.0)
         )
 
         # compute average policy value
@@ -541,7 +524,7 @@ def make_learner_fn(
             num_samples = 8
         pi = actor_model(batch.obs)
         actions = pi.sample(
-            seed=act_key, sample_shape=(num_samples,)
+            seed=act2_key, sample_shape=(num_samples,)
         )  # WARNING: magic number
         actions = jnp.clip(actions, -0.999, 0.999)
         obs = jnp.repeat(batch.obs[None, ...], actions.shape[0], axis=0)
@@ -552,7 +535,6 @@ def make_learner_fn(
             "value": value,
             "policy_value": policy_value,
             "next_emb": next_emb,
-            "importance_weight": importance_weight,
             "log_prob": log_probs,
         }
         return extras
