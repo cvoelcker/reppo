@@ -4,6 +4,7 @@ algorithm:
   lmbda: 0.95
   num_envs: 1024
   num_steps: 128
-  num_mini_batches: 64
+  num_mini_batches: 128
   num_epochs: 4
   aux_loss_mult: 1.0
+  mask_truncated: False

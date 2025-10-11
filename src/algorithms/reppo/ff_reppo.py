@@ -467,6 +467,7 @@ def make_learner_fn(
             lambda_return, gae, truncated, next_value = carry
 
             # combine importance_weights with TD lambda
+            truncated = transition.truncated
             done = transition.done
             reward = transition.extras["soft_reward"]
             value = transition.extras["value"]
@@ -494,7 +495,7 @@ def make_learner_fn(
             f=loop,
             init=(
                 batch.extras["value"][-1],
-                jnp.zeros_like(batch.extras["value"][-1]),
+                batch.extras["policy_value"][-1],
                 jnp.ones_like(batch.truncated[0]),
                 batch.extras["policy_value"][-1],
             ),

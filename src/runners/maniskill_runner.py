@@ -48,6 +48,9 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
             )
             transitions.append(transition)
             obs = next_obs
+            # if "final_info" in info:
+            #     mask = info["_final_info"]
+            #     print(f"Finished {mask.sum()} episodes at {train_state.time_steps/num_envs + i} sequence step with {info['final_info']['episode']['success_once'].sum()/mask.sum()} successes. Got {mask.sum()} masked and {truncated.sum()} truncation.")
 
         transitions = jax.tree.map(lambda *xs: jnp.stack(xs), *transitions)
         train_state = train_state.replace(
