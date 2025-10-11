@@ -25,7 +25,7 @@ class DiscretePolicyHead(nnx.Module):
 class TanhGaussianPolicyHead(nnx.Module):
     def __init__(
         self,
-        min_std: float = 1e-6,
+        min_std: float = 1e-1,
         fixed_std: bool = False,
     ):
         self.min_std = min_std

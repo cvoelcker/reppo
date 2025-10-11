@@ -33,13 +33,13 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
             # Take a step in the environment
             next_obs, reward, done, truncated, info = env.step(action)
             if "final_observation" in info:
-                next_obs = jnp.where(
-                    truncated[:, None], to_jax(info["final_observation"]), next_obs
-                )
+                _next_obs = to_jax(info["final_observation"])
+            else:
+                _next_obs = next_obs
             # Record the transition
             transition = Transition(
                 obs=obs,
-                next_obs=next_obs,
+                next_obs=_next_obs,
                 action=action,
                 reward=reward,
                 done=done,
@@ -66,7 +66,7 @@ def make_eval_fn(env: gymnasium.Env, max_episode_steps: int) -> EvalFn:
         obs, _ = env.reset()
         metrics = defaultdict(list)
         num_episodes = 0
-        for _ in range(max_episode_steps + 1):
+        for _ in range(max_episode_steps):
             key, act_key = jax.random.split(key)
             action, _ = policy(act_key, obs)
             next_obs, reward, terminated, truncated, infos = env.step(action)

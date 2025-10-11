@@ -67,6 +67,8 @@ scale_samples_with_action_d: False
 fixed_actor_std: false
 policy_method: default
 
+mask_truncated: True
+
 network:
   _target_: src.algorithms.reppo.networks.make_continuous_ff_networks
   _partial_: true

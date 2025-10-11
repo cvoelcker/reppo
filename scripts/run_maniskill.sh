@@ -5,7 +5,7 @@
 #SBATCH --mem=128GB
 #SBATCH --ntasks=1
 #SBATCH --tasks-per-node=1
-#SBATCH --time=5:00:00      # time limit
+#SBATCH --time=8:00:00      # time limit
 #SBATCH --account aip-gigor
 #SBATCH --job-name=langevin_reppo
 #SBATCH --output=slurm_logs/langevin_reppo_%A_%a.out
@@ -18,4 +18,4 @@ hostname
 cd /home/$USER/projects/aip-gigor/voelcker/reppo_maniskill/reppo
 source .venv/bin/activate
 
-uv run src/train.py --config-name=reppo_maniskill algorithm=reppo env=maniskill env.name=${env[$((SLURM_ARRAY_TASK_ID%8))]} tags=[maniskill4,policy] logging=wandb_online seed=$RANDOM +experiments=maniskill algorithm.policy_method=default
+uv run src/train.py --config-name=reppo_maniskill algorithm=reppo env=maniskill env.name=${env[$((SLURM_ARRAY_TASK_ID%8))]} tags=[maniskill6,policy] logging=wandb_online seed=$RANDOM +experiments=maniskill algorithm.policy_method=default algorithm.mask_truncated=False

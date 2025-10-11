@@ -203,8 +203,10 @@ def make_learner_fn(
             target_values,
         )
         critic_loss = jnp.mean(critic_loss)
+        mask_truncated = hparams.mask_truncated
+        mask = (1.0 - minibatch.truncated) if mask_truncated else 1.0
         loss = jnp.mean(
-            (1.0 - minibatch.truncated)
+            mask
             * (critic_update_loss + hparams.aux_loss_mult * aux_loss)
         )
         return loss, dict(

@@ -96,7 +96,6 @@ class MLP(nnx.Module):
                 return layer(x)
 
         if self.input_activation:
-            # x = self.norm(x)
             x = self.hidden_activation(x)
         if self.layers == 1:
             return _potentially_skip(self.input_skip, x, self.input_layer)
