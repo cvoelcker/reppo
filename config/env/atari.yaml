@@ -1,0 +1,5 @@
+type: atari
+name: Breakout-v5
+vmin: -10
+vmax: 10
+max_episode_steps: 27000

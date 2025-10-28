@@ -19,11 +19,9 @@ hostname
 cd /home/$USER/projects/aip-gigor/voelcker/reppo
 source .venv/bin/activate
 
-python src/jaxrl/reppo.py --config-name=reppo \
-	env=mjx_dmc \
+python src/algorithms/reppo/train_reppo.py --config-name=ff_playground.yaml \
     env.name=${env[$((SLURM_ARRAY_TASK_ID%23))]} \
 	seed=$RANDOM \
-	tune=false \
-	experiment_overrides=$3 \
-	hyperparameters.actor_kl_clip_mode=$4 \
+	+experiments=$3 \
+	algorithm.actor_kl_clip_mode=$4 \
 	tags=[paper_adamw,$4,$5]

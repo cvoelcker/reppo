@@ -1,0 +1,36 @@
+lr: 0.001
+gamma: 0.995
+lmbda: 0.95
+clip_ratio: 0.2
+value_coef: 0.5
+entropy_coef: 0.01
+total_time_steps: 50_000_000
+num_steps: 32
+num_mini_batches: 32
+num_envs: 2048
+num_epochs: 16
+max_grad_norm: 0.5
+normalize_advantages: True
+normalize_env: True
+anneal_lr: True
+num_eval: 20
+max_episode_steps: 1000
+hidden_dim: 256
+use_tanh_gaussian: False
+loss: dpo
+alpha: 2.0
+beta: 0.6
+
+
+network:
+  _target_: src.algorithms.ppo.networks.PPONetworks
+  _partial_: true
+init:
+  _target_: src.algorithms.ppo.ff_ppo.make_init_fn
+  _partial_: true
+learner:
+  _target_: src.algorithms.ppo.ff_ppo.make_learner_fn
+  _partial_: true
+policy:
+  _target_: src.algorithms.ppo.ff_ppo.make_policy_fn
+  _partial_: true

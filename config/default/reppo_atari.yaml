@@ -1,0 +1,32 @@
+defaults:
+  - algorithm: reppo
+  - env: atari
+  - logging: wandb_offline
+  - runner: gymnasium
+  - _self_
+
+algorithm:
+  total_time_steps: 50000000
+  max_episode_steps: 27000
+  normalize_env: false
+  num_envs: 8
+  num_steps: 128
+  num_mini_batches: 4
+  exploration_base_envs: 4
+  exploration_noise_min: 0.1
+  exploration_noise_max: 5.0
+
+  network:
+    _target_: src.algorithms.reppo.networks.make_atari_ff_networks
+    _partial_: true
+
+
+
+seed: 0
+name: "reppo"
+tags: []
+hydra:
+  job:
+    chdir: True
+  searchpath:
+    - file://config
