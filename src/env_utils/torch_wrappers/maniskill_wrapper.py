@@ -101,11 +101,7 @@ class ManiSkillWrapper(Wrapper):
         Resets the environment and returns the initial observation.
         """
         obs, info = self.env.reset(seed=seed, options=options)
-<<<<<<< HEAD
-        return obs, info
-=======
         return to_jax(obs), to_jax(info)
->>>>>>> origin/maniskill
 
     def step(self, action):
         """

@@ -31,7 +31,7 @@ from torchinfo import summary
 from tensordict import TensorDict
 from torch.amp import GradScaler
 from src.torchrl.envs import make_envs
-from src.networks.torch_models import Actor, Critic
+from src.network_utils.torch_models import Actor, Critic
 
 
 torch.set_float32_matmul_precision("medium")
