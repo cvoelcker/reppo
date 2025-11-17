@@ -1,4 +1,5 @@
 import functools
+from typing_extensions import OrderedDict
 
 import flax.struct as struct
 import jax
@@ -17,6 +18,9 @@ class Normalizer:
         """
         Initialize the normalization state. Pytree should be a single instance without batch dimensions.
         """
+        if isinstance(tree, OrderedDict):
+            tree = dict(tree)
+
         return NormalizationState(
             mean=jax.tree.map(lambda x: jnp.zeros_like(x), tree),
             var=jax.tree.map(lambda x: jnp.ones_like(x), tree),
@@ -61,6 +65,8 @@ class Normalizer:
     def normalize(
         self, state: NormalizationState, tree: struct.PyTreeNode
     ) -> struct.PyTreeNode:
+        if isinstance(tree, OrderedDict):
+            tree = dict(tree)
         return jax.tree.map(
             lambda x, m, v: (x - m) / jnp.sqrt(v + 1e-8), tree, state.mean, state.var
         )

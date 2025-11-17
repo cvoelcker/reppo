@@ -36,6 +36,9 @@ dependencies = [
     # "pufferlib[atari]>=3.0.0",
     # "envpool>=0.8.4",
     # "mani-skill>=3.0.0b21",
+    "torch-jax-interop",
+    "mjlab",
+    "tensorflow-probability>=0.25.0",
 ]
 
 [build-system]
@@ -129,3 +132,5 @@ docstring-code-line-length = "dynamic"
 
 [tool.uv.sources]
 playground = { git = "https://github.com/younggyoseo/mujoco_playground" }
+torch-jax-interop = { git = "https://github.com/lebrice/torch_jax_interop.git" }
+mjlab = { git = "https://github.com/mujocolab/mjlab" }

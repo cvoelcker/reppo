@@ -20,7 +20,6 @@ from src.common import (
 from src.algorithms import utils
 import jax.numpy as jnp
 
-from src.env_utils.torch_wrappers.maniskill_wrapper import to_jax
 
 
 def make_scan_train_fn(
@@ -149,6 +148,7 @@ def make_loop_train_fn(
         make_eval_fn as make_gymnasium_eval_fn,
         make_rollout_fn as make_gymnasium_rollout_fn,
     )
+
     train_log_interval = int((total_time_steps / (num_steps * num_envs)) // num_eval)
 
     if isinstance(env, tuple):
@@ -169,10 +169,8 @@ def make_loop_train_fn(
         train_steps_per_iteration = num_train_steps // num_iterations
         key, init_key = jax.random.split(key)
         state = init_fn(init_key)
-        obs, _ = env.reset()
-        state = state.replace(
-            last_obs=to_jax(obs), last_env_state=None
-        )
+        _ = env.reset()
+       
         logging.info(f"Starting training for {num_iterations} iterations.")
         logging.info(f"Train steps per iteration: {train_steps_per_iteration}.")
         logging.info(f"Total time steps: {total_time_steps}.")

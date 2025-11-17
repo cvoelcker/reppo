@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import dataclasses
 from typing import Generic, TypeVar
 import gymnasium
 from gymnax import EnvParams, EnvState
@@ -60,6 +61,7 @@ def _gymnasium_to_gymnax_space(space: gymnasium.Space) -> GymnaxSpace:
         )
     else:
         raise ValueError(f"Unsupported space type: {type(space)}")
+    
 
 
 def _make_brax_env(cfg: DictConfig) -> EnvSetup[Environment]:
@@ -127,9 +129,7 @@ def _make_gymnasium_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
         return env
 
     env = gym.vector.SyncVectorEnv([_make for _ in range(cfg.algorithm.num_envs)])
-    eval_env = gym.vector.SyncVectorEnv(
-        [_make for _ in range(cfg.algorithm.num_envs)]
-    )
+    eval_env = gym.vector.SyncVectorEnv([_make for _ in range(cfg.algorithm.num_envs)])
     return EnvSetup(
         env=env,
         eval_env=eval_env,
@@ -227,6 +227,47 @@ def _make_atari_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
     )
 
 
+def _make_mjlab_env(cfg: DictConfig) -> EnvSetup[Environment]:
+    from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
+    from mjlab.rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
+    from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, list_tasks
+    from mjlab.utils.spaces import Space, Box, Dict
+    default_env_cfg = load_env_cfg(cfg.env.name)
+    default_env_cfg.scene.num_envs = cfg.algorithm.num_envs + cfg.env.num_eval_envs
+    default_env_cfg.seed = cfg.seed
+
+    def map_space(space: Space) -> GymnaxSpace:
+        if isinstance(space, Box):
+            return GymnaxBox(
+                low=jnp.array(space.low),
+                high=jnp.array(space.high),
+                dtype=space.dtype,
+                shape=space.shape,
+            )
+        elif isinstance(space, Dict):
+            return GymnaxDict(
+                {k: map_space(v) for k, v in space.spaces.items()}
+            )
+        else:
+            raise ValueError(f"Unsupported space type: {type(space)}")
+
+    def make_env_instance():
+        env = ManagerBasedRlEnv(
+            cfg=default_env_cfg,
+            device=cfg.env.device,
+            render_mode="rgb_array" if cfg.env.video else None,
+        )
+        return env
+    
+    env = make_env_instance()
+    return EnvSetup(
+        env=env,
+        eval_env=env,
+        action_space=map_space(env.single_action_space),
+        observation_space=map_space(env.single_observation_space),
+    )
+
+
 def make_env(cfg: DictConfig) -> EnvSetup[Env]:
     if cfg.env.type == "brax":
         return _make_brax_env(cfg)
@@ -242,5 +283,7 @@ def make_env(cfg: DictConfig) -> EnvSetup[Env]:
         return _make_atari_env(cfg)
     elif cfg.env.type == "maniskill":
         return _make_maniskill_env(cfg)
+    elif cfg.env.type == "mjlab":
+        return _make_mjlab_env(cfg)
     else:
         raise ValueError(f"Unknown environment type: {cfg.env.type}")

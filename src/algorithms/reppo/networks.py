@@ -27,19 +27,21 @@ class Critic(nnx.Module):
         prediction_network: nnx.Module = None,
         asymmetric_obs: bool = False,
         is_discrete: bool = False,
+        obs_key: str = "privileged_state",
     ):
         self.feature_encoder = feature_encoder
         self.q_network = q_network
         self.prediction_network = prediction_network
         self.asymmetric_obs = asymmetric_obs
         self.is_discrete = is_discrete
+        self.obs_key = obs_key
 
     def __call__(self, obs: jax.Array, action: jax.Array = None) -> jax.Array:
         if self.asymmetric_obs:
-            assert isinstance(obs, dict) and "privileged_state" in obs, (
+            assert isinstance(obs, dict) and self.obs_key in obs, (
                 "Privileged state must be provided for asymmetric observations."
             )
-            obs = obs["privileged_state"]
+            obs = obs[self.obs_key]
 
         if self.is_discrete:
             features = self.feature_encoder(obs)
@@ -64,28 +66,30 @@ class Actor(nnx.Module):
         kl_start: float = 0.1,
         ent_start: float = 0.1,
         asymmetric_obs: bool = False,
+        policy_obs_key: str = "state",
     ):
         self.feature_encoder = feature_encoder
         self.policy_head = policy_head
         self.asymmetric_obs = asymmetric_obs
+        self.policy_obs_key = policy_obs_key
         self.log_lagrangian = nnx.Param(jnp.ones(1) * math.log(kl_start))
         self.log_temperature = nnx.Param(jnp.ones(1) * math.log(ent_start))
 
     def __call__(self, obs: jax.Array, scale: jax.Array = 1.0) -> distrax.Distribution:
         if self.asymmetric_obs:
-            assert isinstance(obs, dict) and "state" in obs, (
+            assert isinstance(obs, dict) and self.policy_obs_key in obs, (
                 "State must be provided for actor."
             )
-            obs = obs["state"]
+            obs = obs[self.policy_obs_key]
         features = self.feature_encoder(obs)
         return self.policy_head(features, scale=scale, deterministic=False)
 
     def det_action(self, obs: jax.Array) -> jax.Array:
         if self.asymmetric_obs:
-            assert isinstance(obs, dict) and "state" in obs, (
+            assert isinstance(obs, dict) and self.policy_obs_key in obs, (
                 "State must be provided for actor."
             )
-            obs = obs["state"]
+            obs = obs[self.policy_obs_key]
         features = self.feature_encoder(obs)
         return self.policy_head(features, deterministic=True)
 
@@ -105,15 +109,12 @@ def make_continuous_actor(
     rngs: nnx.Rngs,
 ) -> Actor:
     hparams = cfg.algorithm
-    if cfg.env.get("asymmetric_observation", False):
-        actor_observation_space = observation_space.spaces["state"]
-    else:
-        actor_observation_space = observation_space
+
     if encoder is not None:
         actor_encoder = encoder
     else:
         actor_encoder = MLP(
-            in_features=actor_observation_space.shape[0],
+            in_features=observation_space.shape[0],
             out_features=action_space.shape[0] * 2,
             hidden_dim=hparams.actor_hidden_dim,
             hidden_activation=nnx.swish,
@@ -127,10 +128,13 @@ def make_continuous_actor(
         )
     actor = Actor(
         feature_encoder=actor_encoder,
-        policy_head=TanhGaussianPolicyHead(min_std=hparams.actor_min_std, fixed_std=hparams.fixed_actor_std),
+        policy_head=TanhGaussianPolicyHead(
+            min_std=hparams.actor_min_std, fixed_std=hparams.fixed_actor_std
+        ),
         kl_start=hparams.kl_start,
         ent_start=hparams.ent_start,
         asymmetric_obs=cfg.env.get("asymmetric_observation", False),
+        policy_obs_key=cfg.env.get("policy_obs_key", "state"),
     )
     return actor
 
@@ -207,6 +211,7 @@ def make_continuous_critic(
         q_network=q_network,
         prediction_network=pred_module,
         asymmetric_obs=cfg.env.get("asymmetric_observation", False),
+        obs_key=cfg.env.get("critic_obs_key", "privileged_state"),
         is_discrete=False,
     )
     return critic
@@ -228,24 +233,21 @@ def make_discrete_actor(
         actor_encoder = Identity()
         in_features = observation_space.shape[0]
     actor_head = MLP(
-            in_features=in_features,
-            out_features=action_space.n,
-            hidden_dim=hparams.actor_hidden_dim,
-            hidden_activation=nnx.relu,
-            output_activation=None,
-            use_norm=hparams.use_actor_norm,
-            use_output_norm=False,
-            layers=hparams.num_actor_layers,
-            hidden_skip=hparams.use_actor_skip,
-            output_skip=hparams.use_actor_skip,
-            final_layer_scaling=0.01,
-            rngs=rngs,
-        )
+        in_features=in_features,
+        out_features=action_space.n,
+        hidden_dim=hparams.actor_hidden_dim,
+        hidden_activation=nnx.relu,
+        output_activation=None,
+        use_norm=hparams.use_actor_norm,
+        use_output_norm=False,
+        layers=hparams.num_actor_layers,
+        hidden_skip=hparams.use_actor_skip,
+        output_skip=hparams.use_actor_skip,
+        final_layer_scaling=0.01,
+        rngs=rngs,
+    )
     actor = Actor(
-        feature_encoder=nnx.Sequential(
-            actor_encoder,
-            actor_head
-        ),
+        feature_encoder=nnx.Sequential(actor_encoder, actor_head),
         policy_head=DiscretePolicyHead(),
         kl_start=hparams.kl_start,
         ent_start=hparams.ent_start,
@@ -337,8 +339,10 @@ def make_continuous_ff_networks(
     rngs: nnx.Rngs,
 ) -> tuple[Actor, Critic]:
     if cfg.env.get("asymmetric_observation", False):
-        q_observation_space = observation_space.spaces["privileged_state"]
-        actor_observation_space = observation_space.spaces["state"]
+        q_obs_key = cfg.env.get("critic_obs_key", "privileged_state")
+        q_observation_space = observation_space.spaces[q_obs_key]
+        actor_obs_key = cfg.env.get("policy_obs_key", "state")
+        actor_observation_space = observation_space.spaces[actor_obs_key]
     else:
         q_observation_space = observation_space
         actor_observation_space = observation_space

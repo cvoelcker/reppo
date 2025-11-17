@@ -1,0 +1,11 @@
+type: mjlab
+name: "Mjlab-Velocity-Flat-Unitree-G1"
+max_episode_steps: 1000
+video: false
+device: "cuda:0"
+asymmetric_observation: true
+policy_obs_key: "policy"
+critic_obs_key: "critic"
+num_eval_envs: 64
+vmin: -10
+vmax: 10
