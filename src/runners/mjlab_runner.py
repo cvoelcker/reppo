@@ -37,9 +37,13 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
         # Take a step in the environment
 
         transitions = []
-        obs = train_state.last_obs
-        prev_step = train_state.time_steps
-        prev_time = time.perf_counter()
+        if train_state.last_obs is None:
+            # Reset the environment
+            obs, _ = env.reset()
+            obs = torch_to_jax_array(obs)
+        else:
+            obs = train_state.last_obs
+            
         for _ in range(num_steps):
             # Select action
             key, act_key = jax.random.split(key)

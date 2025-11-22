@@ -1,3 +1,4 @@
+import copy
 from dataclasses import dataclass
 import dataclasses
 from typing import Generic, TypeVar
@@ -233,7 +234,6 @@ def _make_mjlab_env(cfg: DictConfig) -> EnvSetup[Environment]:
     from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, list_tasks
     from mjlab.utils.spaces import Space, Box, Dict
     default_env_cfg = load_env_cfg(cfg.env.name)
-    default_env_cfg.scene.num_envs = cfg.algorithm.num_envs + cfg.env.num_eval_envs
     default_env_cfg.seed = cfg.seed
 
     def map_space(space: Space) -> GymnaxSpace:
@@ -251,18 +251,23 @@ def _make_mjlab_env(cfg: DictConfig) -> EnvSetup[Environment]:
         else:
             raise ValueError(f"Unsupported space type: {type(space)}")
 
-    def make_env_instance():
+    def make_env_instance(eval: bool = False) -> ManagerBasedRlEnv:
+        env_cfg = copy.deepcopy(default_env_cfg)
+        env_cfg.scene.num_envs = (
+            cfg.env.num_eval_envs if eval else cfg.algorithm.num_envs
+        )
         env = ManagerBasedRlEnv(
-            cfg=default_env_cfg,
+            cfg=env_cfg,
             device=cfg.env.device,
             render_mode="rgb_array" if cfg.env.video else None,
         )
         return env
     
-    env = make_env_instance()
+    env = make_env_instance(eval=False)
+    eval_env = make_env_instance(eval=True)
     return EnvSetup(
         env=env,
-        eval_env=env,
+        eval_env=eval_env,
         action_space=map_space(env.single_action_space),
         observation_space=map_space(env.single_observation_space),
     )
