@@ -1,0 +1,9 @@
+# mjx_dmc
+sbatch scripts/paper_experiments/slurm_dmc.sh mjx_dmc unused mjx_dmc_tiny_data tiny,paper_rebuttal
+sbatch scripts/paper_experiments/slurm_dmc.sh mjx_dmc unused mjx_dmc_really_tiny_data really_tiny,paper_rebuttal
+
+# ppo
+sbatch scripts/paper_experiments/slurm_ppo_baseline.sh ppo mjx_dmc_tiny_data tiny,paper_rebuttal
+sbatch scripts/paper_experiments/slurm_ppo_baseline.sh ppo mjx_dmc_really_tiny_data really_tiny,paper_rebuttal
+sbatch scripts/paper_experiments/slurm_ppo_baseline.sh ppo mjx_dmc_large_data large,paper_rebuttal
+sbatch scripts/paper_experiments/slurm_ppo_baseline.sh ppo mjx_dmc_small_data small,paper_rebuttal

@@ -11,7 +11,7 @@
 #SBATCH --output=slurm_logs/slurm_mjx_op_%A_%a.out
 #SBATCH --error=slurm_logs/slurm_mjx_op_%A_%a.err
 #SBATCH --exclude=kn104,kn115,kn146,kn153
-#SBATCH --array=0-92%23
+#SBATCH --array=0-460%23
 
 env=(AcrobotSwingup AcrobotSwingupSparse BallInCup CartpoleBalance CartpoleBalanceSparse CartpoleSwingup CartpoleSwingupSparse CheetahRun FingerSpin FingerTurnEasy FingerTurnHard FishSwim HopperHop HopperStand PendulumSwingup ReacherEasy ReacherHard WalkerRun WalkerWalk WalkerStand HumanoidStand HumanoidWalk HumanoidRun)
 hostname

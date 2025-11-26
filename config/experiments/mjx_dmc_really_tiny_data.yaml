@@ -1,0 +1,6 @@
+# @package _global_
+algorithm:
+  num_envs: 128
+  num_steps: 8
+  num_mini_batches: 4
+  num_epochs: 2

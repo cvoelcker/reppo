@@ -24,11 +24,12 @@ uv run src/train.py --config-name=ppo_continuous \
     algorithm=$1 \
 	env=mjx_dmc \
     env.name=${env[$((SLURM_ARRAY_TASK_ID%23))]} \
-	tags=[paper_adamw,ppo_paper2,tanh,$1,$4] \
+	+experiments=$2 \
+	tags=[paper_adamw,ppo_paper,$1,$3] \
 	logging=wandb_online \
-	algorithm.total_time_steps=$3 \
-	algorithm.hidden_dim=$2 \
-	algorithm.num_eval=100 \
+	algorithm.total_time_steps=50000000 \
+	algorithm.hidden_dim=512 \
+	algorithm.num_eval=25 \
 	algorithm.use_tanh_gaussian=True \
 	seed=$RANDOM
 

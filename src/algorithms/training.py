@@ -10,17 +10,13 @@ from src.common import (
     Key,
     LearnerFn,
     LogCallback,
-    Policy,
     PolicyFn,
     RolloutFn,
     TrainFn,
     TrainState,
-    Transition,
 )
 from src.algorithms import utils
 import jax.numpy as jnp
-
-# from src.env_utils.torch_wrappers.maniskill_wrapper import to_jax
 
 
 def make_scan_train_fn(
