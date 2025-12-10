@@ -1,11 +1,11 @@
 rollout_fn:
-  _target_: src.runners.gymnasium_runner.make_rollout_fn
+  _target_: src.runners.torch_cuda_runner.make_rollout_fn
   _partial_: true
   num_steps: ${algorithm.num_steps}
   num_envs: ${algorithm.num_envs}
 
 eval_fn:
-  _target_: src.runners.maniskill_runner.make_eval_fn
+  _target_: src.runners.torch_cuda_runner.make_eval_fn
   _partial_: true
   max_episode_steps: ${algorithm.max_episode_steps}
   

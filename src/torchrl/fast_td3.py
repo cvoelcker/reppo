@@ -19,11 +19,11 @@ import tqdm
 
 import wandb
 
-try:
-    # Required for avoiding IsaacGym import error
-    import isaacgym
-except ImportError:
-    pass
+# try:
+#     # Required for avoiding IsaacGym import error
+#     import isaacgym
+# except ImportError:
+#     pass
 
 import torch
 import torch.nn as nn

@@ -1,14 +1,20 @@
 from typing import Optional
 
 import gymnasium as gym
+from gymnasium.spaces import Box
+import numpy as np
 import torch
+
 from isaaclab.app import AppLauncher
-from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
 app_launcher = AppLauncher(headless=True)
 simulation_app = app_launcher.app
 
+import isaaclab_tasks
+from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
+
+print("Got past setup")
 
 class IsaacLabEnv:
     """Wrapper for IsaacLab environments to be compatible with MuJoCo Playground"""
@@ -19,8 +25,11 @@ class IsaacLabEnv:
         device: str,
         num_envs: int,
         seed: int,
-        action_bounds: Optional[float] = None,
+        action_bounds: Optional[list] = None,
     ):
+        print("LAUNCHING APP NOW")
+
+
         env_cfg = parse_env_cfg(
             task_name,
             device=device,
@@ -42,15 +51,30 @@ class IsaacLabEnv:
         else:
             self.num_privileged_obs = 0
         self.num_actions = self.envs.unwrapped.single_action_space.shape[0]
+        
+        # Create gymnasium Box spaces for compatibility
+        self.observation_space = Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(self.num_obs,),
+            dtype=np.float32,
+        )
+        self.action_space = Box(
+            low=-1.0 if action_bounds is None else action_bounds[0],
+            high=1.0 if action_bounds is None else action_bounds[1],
+            shape=(self.num_actions,),
+            dtype=np.float32,
+        )
 
     def reset(self, random_start_init: bool = True) -> torch.Tensor:
         obs_dict, _ = self.envs.reset()
         # NOTE: decorrelate episode horizons like RSL‑RL
+        print(random_start_init)
         if random_start_init:
             self.envs.unwrapped.episode_length_buf = torch.randint_like(
                 self.envs.unwrapped.episode_length_buf, high=int(self.max_episode_steps)
             )
-        return obs_dict["policy"]
+        return obs_dict["policy"], None
 
     def reset_with_critic_obs(self) -> tuple[torch.Tensor, torch.Tensor]:
         obs_dict, _ = self.envs.reset()
@@ -60,7 +84,7 @@ class IsaacLabEnv:
         self, actions: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
         if self.action_bounds is not None:
-            actions = torch.clamp(actions, -1.0, 1.0) * self.action_bounds
+            actions = torch.clamp(actions, self.action_bounds[0], self.action_bounds[1])
         obs_dict, rew, terminations, truncations, infos = self.envs.step(actions)
         dones = (terminations | truncations).to(dtype=torch.long)
         obs = obs_dict["policy"]
@@ -73,7 +97,7 @@ class IsaacLabEnv:
             "obs": obs,
             "critic_obs": critic_obs,
         }
-        return obs, rew, dones, info_ret
+        return obs, rew, dones, truncations, info_ret
 
     def render(self):
         raise NotImplementedError(

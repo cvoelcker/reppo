@@ -16,6 +16,7 @@ from src.common import (
     TrainState,
 )
 from src.algorithms import utils
+from src.env_utils.torch_wrappers.torch_cuda_wrapper import to_jax
 import jax.numpy as jnp
 
 

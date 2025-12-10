@@ -25,7 +25,7 @@ from src.env_utils.jax_wrappers import (
     LogWrapper,
     MjxGymnaxWrapper,
 )
-from src.env_utils.torch_wrappers.maniskill_wrapper import ManiSkillWrapper
+from src.env_utils.torch_wrappers.torch_cuda_wrapper import ManiSkillWrapper
 
 Env = gymnasium.Env | Environment[EnvState, EnvParams]
 Space = gymnasium.Space | GymnaxSpace
@@ -202,6 +202,32 @@ def _make_maniskill_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
     )
 
 
+def _make_isaaclab_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
+    from src.env_utils.torch_wrappers.isaaclab_env import IsaacLabEnv
+    import torch
+
+    def make_env():
+        env = IsaacLabEnv(
+            task_name=cfg.env.name,
+            device="cuda",
+            num_envs=cfg.algorithm.num_envs,
+            seed=cfg.env.seed,
+            action_bounds=cfg.env.get("action_bounds", None),
+        )
+        return env
+
+    env = make_env()
+    # eval_env = make_env()
+    return EnvSetup(
+        env=env,
+        eval_env=env,
+        action_space=_gymnasium_to_gymnax_space(env.action_space),
+        observation_space=_gymnasium_to_gymnax_space(
+            env.observation_space
+        ),
+    )
+
+
 def _make_atari_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
     import envpool
     from src.env_utils.atari import RecordEpisodeStatistics
@@ -242,5 +268,7 @@ def make_env(cfg: DictConfig) -> EnvSetup[Env]:
         return _make_atari_env(cfg)
     elif cfg.env.type == "maniskill":
         return _make_maniskill_env(cfg)
+    elif cfg.env.type == "isaaclab":
+        return _make_isaaclab_env(cfg)
     else:
         raise ValueError(f"Unknown environment type: {cfg.env.type}")

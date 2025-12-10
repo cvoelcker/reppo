@@ -1,5 +1,6 @@
 from gymnasium import Wrapper
 import jax
+import jax.numpy as jnp
 import numpy as np
 import torch
 
@@ -11,6 +12,30 @@ def to_numpy(x):
         return x.cpu().numpy()
     else:
         return np.array(x)
+
+def to_jax(x):
+    if isinstance(x, np.ndarray):
+        return jnp.array(x)
+    elif isinstance(x, jax.Array):
+        return x
+    elif isinstance(x, torch.Tensor):
+        return jax.dlpack.from_dlpack(torch.utils.dlpack.to_dlpack(x.contiguous()))
+    elif isinstance(x, dict) or isinstance(x, list):
+        return jax.tree.map(to_jax, x)
+    else:
+        return jnp.array(x)
+
+
+def to_torch(x):
+    if isinstance(x, np.ndarray):
+        return torch.from_numpy(x)
+    elif isinstance(x, torch.Tensor):
+        return x
+    elif isinstance(x, jax.Array):
+        return torch.utils.dlpack.from_dlpack(jax.dlpack.to_dlpack(x))
+    else:
+        raise ValueError(f"Cannot convert type {type(x)} to torch.Tensor")
+
 
 
 class ManiSkillWrapper(Wrapper):

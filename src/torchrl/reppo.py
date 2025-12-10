@@ -14,11 +14,6 @@ import wandb
 
 from src.torchrl.reppo import EmpiricalNormalization, hl_gauss
 
-try:
-    # Required for avoiding IsaacGym import error
-    import isaacgym
-except ImportError:
-    pass
 
 import hydra
 import torch

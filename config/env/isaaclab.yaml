@@ -1,3 +1,11 @@
 type: isaaclab
 name:
 action_bounds: [-1, 1]
+max_episode_steps: 1000
+
+reward_scaling: 1.0
+asymmetric_observation: false
+seed: ${seed}
+
+vmin: -20
+vmax: 20
