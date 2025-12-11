@@ -1,13 +1,14 @@
-total_time_steps: 50_000_000
+total_time_steps: 1000_000_000
 normalize_env: true
 max_episode_steps: ${env.max_episode_steps}
 eval_interval: 2
-num_eval: 25
+num_eval: 1
 
 # optimization settings (seem very stable)
 optimizer:
   _target_: optax.adam
   learning_rate: 3e-4
+
 anneal_lr: false
 max_grad_norm: 0.5
 polyak: 1.0 # maybe ablate ?
@@ -20,7 +21,7 @@ lmbda_min: 0.95 # irrelevant if no exploration noise is added
 # batch settings (need tuning for MJX humanoid)
 num_steps: 128
 num_mini_batches: 128
-num_envs: 1024
+num_envs: 4096
 num_epochs: 4
 
 # exploration settings (currently not touched)
@@ -57,11 +58,11 @@ reverse_kl: false # previous default "false"
 update_kl_lagrangian: true
 actor_kl_clip_mode: "clipped" # "full", "clipped", "kl_relu_clipped", "kl_bound_clipped", "value"
 ## entropy settings
-ent_start: 0.01
+ent_start: 0.001
 ent_target_mult: 0.5
 update_entropy_lagrangian: true
 ## auxiliary loss settings
-aux_loss_mult: 1.0
+aux_loss_mult: 0.0
 gradient_estimator: "pathwise_q" # "score_based_gae", "score_based_q", "pathwise_q"
 scale_samples_with_action_d: False
 fixed_actor_std: false

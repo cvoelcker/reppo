@@ -13,8 +13,10 @@ from src.common import (
     TrainState,
     Transition,
 )
+from src.algorithms import utils
 from src.env_utils.torch_wrappers.torch_cuda_wrapper import to_jax
 
+logger = utils.setup_logger("reppo/torch_cuda_runner")
 
 def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> RolloutFn:
     def collect_rollout(
@@ -39,7 +41,6 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
             # Record the transition
             transition = Transition(
                 obs=obs,
-                next_obs=_next_obs,
                 action=action,
                 reward=reward,
                 done=done,
@@ -48,14 +49,14 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
             )
             transitions.append(transition)
             obs = next_obs
-
+        logger.info(f'Current performance: {info["log_info"]["return"].mean().item():.2f} return in {info["log_info"]["episode_len"].mean().item()} steps.')
         transitions = jax.tree.map(lambda *xs: jnp.stack(xs), *transitions)
         train_state = train_state.replace(
             last_obs=obs,
             time_steps=train_state.time_steps + num_steps * num_envs,
         )
 
-        return transitions, train_state
+        return transitions, train_state, info["log_info"]
 
     return collect_rollout
 
@@ -66,7 +67,7 @@ def make_eval_fn(env: gymnasium.Env, max_episode_steps: int) -> EvalFn:
         obs, _ = env.reset()
         metrics = defaultdict(list)
         num_episodes = 0
-        for _ in range(max_episode_steps):
+        for i in range(max_episode_steps):
             key, act_key = jax.random.split(key)
             action, _ = policy(act_key, obs)
             next_obs, reward, terminated, truncated, infos = env.step(action)

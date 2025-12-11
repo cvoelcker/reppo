@@ -183,13 +183,13 @@ def make_learner_fn(
         return loss, dict(
             actor_loss=actor_loss,
             value_loss=value_loss,
-            entropy_loss=entropy_loss,
+            entropy=entropy_loss,
             loss=loss,
-            mean_value=value.mean(),
-            mean_log_prob=log_prob.mean(),
-            mean_advantages=advantages.mean(),
-            mean_action=minibatch.action.mean(),
-            mean_reward=minibatch.reward.mean(),
+            value_mean=value.mean(),
+            log_prob_mean=log_prob.mean(),
+            advantages_mean=advantages.mean(),
+            action_mean=minibatch.action.mean(),
+            reward_mean=minibatch.reward.mean(),
         )
 
     def update(train_state: PPOTrainState, batch: Transition):
@@ -290,7 +290,7 @@ def make_learner_fn(
             value = transition.extras["value"]
             delta = reward + algo_cfg.gamma * next_value * (1 - done) - value
             gae = delta + algo_cfg.gamma * algo_cfg.lmbda * (1 - done) * gae
-            truncated_gae = reward + algo_cfg.gamma * next_value - value
+            truncated_gae = reward
             gae = jnp.where(truncated, truncated_gae, gae)
             return (gae, value), gae
 

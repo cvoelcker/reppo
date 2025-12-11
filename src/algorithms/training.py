@@ -19,6 +19,7 @@ from src.algorithms import utils
 from src.env_utils.torch_wrappers.torch_cuda_wrapper import to_jax
 import jax.numpy as jnp
 
+logger = utils.setup_logger("reppo/training")
 
 def make_scan_train_fn(
     env: Environment | tuple[Environment, Environment],
@@ -146,8 +147,6 @@ def make_loop_train_fn(
         make_eval_fn as make_gymnasium_eval_fn,
         make_rollout_fn as make_gymnasium_rollout_fn,
     )
-    train_log_interval = int((total_time_steps / (num_steps * num_envs)) // num_eval)
-
     if isinstance(env, tuple):
         env, eval_env = env
     else:
@@ -170,9 +169,9 @@ def make_loop_train_fn(
         state = state.replace(
             last_obs=to_jax(obs), last_env_state=None
         )
-        logging.info(f"Starting training for {num_iterations} iterations.")
-        logging.info(f"Train steps per iteration: {train_steps_per_iteration}.")
-        logging.info(f"Total time steps: {total_time_steps}.")
+        logger.info(f"Starting training for {num_iterations} iterations.")
+        logger.info(f"Train steps per iteration: {train_steps_per_iteration}.")
+        logger.info(f"Total time steps: {total_time_steps}.")
         
       
         step = 0
@@ -181,7 +180,7 @@ def make_loop_train_fn(
                 key, rollout_key, learn_key = jax.random.split(key, 3)
                 # Collect trajectories from `state`
                 policy = policy_fn(state, False)
-                transitions, state = rollout_fn(
+                transitions, state, env_info = rollout_fn(
                     key=rollout_key, train_state=state, policy=policy
                 )
                 # Execute an update to the policy with `transitions`
@@ -189,8 +188,10 @@ def make_loop_train_fn(
                     key=learn_key, train_state=state, batch=transitions
                 )
 
-                if step % train_log_interval == 0:
-                    log_callback(state, utils.prefix_dict("train", train_metrics))
+                logger.info(f"Train Step: {step}")
+                logger.info(f"Train Metrics: {train_metrics}")
+                log_callback(state, utils.prefix_dict("train", train_metrics))
+                log_callback(state, utils.prefix_dict("env", env_info))
                 step += 1
             policy = policy_fn(state, not stochastic_eval)
             key, eval_key = jax.random.split(key)

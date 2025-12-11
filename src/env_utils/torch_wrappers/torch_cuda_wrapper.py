@@ -5,14 +5,6 @@ import numpy as np
 import torch
 
 
-def to_numpy(x):
-    if isinstance(x, np.ndarray):
-        return x
-    elif isinstance(x, torch.Tensor):
-        return x.cpu().numpy()
-    else:
-        return np.array(x)
-
 def to_jax(x):
     if isinstance(x, np.ndarray):
         return jnp.array(x)
@@ -37,7 +29,6 @@ def to_torch(x):
         raise ValueError(f"Cannot convert type {type(x)} to torch.Tensor")
 
 
-
 class ManiSkillWrapper(Wrapper):
     """
     A wrapper for ManiSkill environments to ensure compatibility with the expected API.
@@ -52,9 +43,9 @@ class ManiSkillWrapper(Wrapper):
         self.max_episode_steps = max_episode_steps
         self.partial_reset = partial_reset
 
-        self.returns = np.zeros(env.num_envs, dtype=np.float32)
-        self.episode_len = np.zeros(env.num_envs, dtype=np.float32)
-        self.success = np.zeros(env.num_envs, dtype=np.float32)
+        self.returns = jnp.zeros(env.num_envs, dtype=np.float32)
+        self.episode_len = jnp.zeros(env.num_envs, dtype=np.float32)
+        self.success = jnp.zeros(env.num_envs, dtype=np.float32)
 
     @property
     def action_space(self):
@@ -110,36 +101,33 @@ class ManiSkillWrapper(Wrapper):
         Resets the environment and returns the initial observation.
         """
         obs, info = self.env.reset(seed=seed, options=options)
-        return jax.tree.map(to_numpy, obs), jax.tree.map(to_numpy, info)
+        return to_jax(obs), to_jax(info)
 
     def step(self, action):
         """
         Takes a step in the environment with the given action.
         Returns the next observation, reward, done, and info.
         """
-        action = torch.from_numpy(action)
+        action = to_torch(action)
         obs, reward, terminated, truncated, info = self.env.step(action)
-        obs = jax.tree.map(to_numpy, obs)
-        reward = to_numpy(reward)
-        terminated = to_numpy(terminated)
-        truncated = to_numpy(truncated)
-        info = jax.tree.map(to_numpy, info)
+        obs = to_jax(obs)
+        reward = to_jax(reward)
+        terminated = to_jax(terminated)
+        truncated = to_jax(truncated)
+        info = to_jax(info)
 
         if "final_info" in info:
             self.returns = (
-                info["final_info"]["episode"]["return"]
-                * info["_final_info"].astype(np.float32)
-                + (1.0 - info["_final_info"].astype(np.float32)) * self.returns
+                info["final_info"]["episode"]["return"] * info["_final_info"]
+                + (1.0 - info["_final_info"]) * self.returns
             )
             self.episode_len = (
-                info["final_info"]["episode"]["episode_len"]
-                * info["_final_info"].astype(np.float32)
-                + (1.0 - info["_final_info"].astype(np.float32)) * self.episode_len
+                info["final_info"]["episode"]["episode_len"] * info["_final_info"]
+                + (1.0 - info["_final_info"]) * self.episode_len
             )
             self.success = (
-                info["final_info"]["episode"]["success_once"]
-                * info["_final_info"].astype(np.float32)
-                + (1.0 - info["_final_info"].astype(np.float32)) * self.success
+                info["final_info"]["episode"]["success_once"] * info["_final_info"]
+                + (1.0 - info["_final_info"]) * self.success
             )
         info["log_info"] = {
             "return": self.returns,
@@ -149,9 +137,10 @@ class ManiSkillWrapper(Wrapper):
         if self.partial_reset:
             # maniskill continues bootstrap on terminated, which playground does on truncated.
             # This unifies the interfaces in a very hacky way
-            done = np.zeros_like(terminated, dtype=bool)
-            truncated = np.logical_or(terminated, truncated)
+            done = jnp.zeros_like(terminated, dtype=bool)
+            truncated = jnp.logical_or(terminated, truncated)
         else:
-            done = np.logical_or(terminated, truncated)
-            truncated = np.zeros_like(done, dtype=bool)
+            done = jnp.logical_or(terminated, truncated)
+            truncated = jnp.zeros_like(done, dtype=bool)
         return obs, reward, done, truncated, info
+

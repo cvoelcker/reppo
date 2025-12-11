@@ -45,7 +45,7 @@ def make_envs(cfg: DictConfig, device: torch.device, seed: int = None) -> tuple:
         from mani_skill.utils import gym_utils
         from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
         from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
-        from src.env_utils.torch_wrappers.maniskill_wrapper import (
+        from src.env_utils.torch_wrappers.torch_cuda_wrapper import (
             ManiSkillWrapper,
         )
 

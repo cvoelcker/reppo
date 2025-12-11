@@ -308,6 +308,9 @@ def make_learner_fn(
             entropy=entropy,
             entropy_loss=target_entropy_loss,
             target_values=minibatch.extras["target_values"].mean(),
+            done_mean=minibatch.done.mean(),
+            truncated_mean=minibatch.truncated.mean(),
+            both_term_trunc_mean=(minibatch.done * minibatch.truncated).mean(),
         )
 
     def compute_policy_kl(
@@ -406,7 +409,7 @@ def make_learner_fn(
             lambda_sum = (
                 hparams.lmbda * lambda_return + (1 - hparams.lmbda) * value
             )
-            lambda_return = reward + hparams.gamma * jnp.where(truncated, value, (1.0 - done) * lambda_sum)
+            lambda_return = reward + hparams.gamma * jnp.where(truncated, policy_value, (1.0 - done) * lambda_sum)
 
             # GAE for policy
             delta = reward + hparams.gamma * (1.0 - done) * next_value - policy_value

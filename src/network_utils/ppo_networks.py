@@ -46,7 +46,7 @@ class ContinuousActor(nnx.Module):
         self.actor_module = make_mlp(
             nnx.tanh, obs_space.shape[-1], hidden_layers, action_space.shape[-1]
         )
-        self.log_std = nnx.Param(jnp.zeros(action_space.shape[-1]))
+        self.log_std = nnx.Param(jnp.ones(action_space.shape[-1])) * -3.0
 
     def __call__(self, obs: jax.Array) -> distrax.Distribution:
         loc = self.actor_module(obs)

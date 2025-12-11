@@ -14,6 +14,8 @@ from gymnax.environments.environment import Environment
 from flax import struct
 import gymnasium as gym
 
+logger = logging.getLogger(__name__)
+
 
 def describe(values: jnp.ndarray, axis: tuple | int = 0) -> dict[str, jnp.ndarray]:
     """Compute basic statistics for a batch of values."""
@@ -147,6 +149,22 @@ def simplical_softmax_cross_entropy(pred, target, dim=8):
     )
 
 
+def setup_logger(name: str = "reppo") -> logging.Logger:
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
+    for hndler in logger.handlers:
+        logger.removeHandler(hndler)
+
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    handler.setFormatter(formatter)
+    handler.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    return logger
+
+
 def make_log_callback():
     metric_history = []
     times = [time.perf_counter()]
@@ -195,7 +213,7 @@ def make_log_callback():
             else:
                 log_strs.append(f"  {k}={metrics[k]:.3f}")
            
-        logging.info(
+        logger.info(
             "\n" + "\n".join(log_strs)
         )
 

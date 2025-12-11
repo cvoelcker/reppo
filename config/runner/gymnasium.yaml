@@ -18,5 +18,5 @@ train_fn:
   num_envs: ${algorithm.num_envs}
   num_eval: ${algorithm.num_eval}
   max_episode_steps: ${algorithm.max_episode_steps}
-  train_log_interval: 10
+  train_log_interval: 1
   stochastic_eval: False

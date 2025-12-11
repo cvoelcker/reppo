@@ -7,7 +7,7 @@ from omegaconf import DictConfig, OmegaConf
 from src.algorithms import envs, utils
 from src.common import InitFn, LearnerFn, PolicyFn
 
-logging.basicConfig(level=logging.INFO)
+logger = utils.setup_logger("reppo/main")
 
 @hydra.main(
     version_base=None,
@@ -15,8 +15,9 @@ logging.basicConfig(level=logging.INFO)
     config_name="reppo_continuous.yaml",
 )
 def main(cfg: DictConfig):
+    logger.setLevel(logging.INFO)
     OmegaConf.resolve(cfg)
-    logging.info("\n" + OmegaConf.to_yaml(cfg))
+    logger.info("\n" + OmegaConf.to_yaml(cfg))
     wandb.init(
         mode=cfg.logging.mode,
         project=cfg.logging.project,

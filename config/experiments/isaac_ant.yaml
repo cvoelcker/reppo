@@ -1,9 +1,9 @@
 # @package _global_
 algorithm:
   gamma: 0.99
-  critic_hidden_dim: 1024
+  critic_hidden_dim: 512
   num_envs: 4096
   num_steps: 32
   num_mini_batches: 4
   num_epochs: 4
-  kl_bound: 0.05
+  kl_bound: 0.1
