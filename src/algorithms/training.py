@@ -167,7 +167,7 @@ def make_loop_train_fn(
         state = init_fn(init_key)
         obs, _ = env.reset()
         state = state.replace(
-            last_obs=to_jax(obs), last_env_state=None
+            last_obs=to_jax(obs).copy(), last_env_state=None
         )
         logger.info(f"Starting training for {num_iterations} iterations.")
         logger.info(f"Train steps per iteration: {train_steps_per_iteration}.")
@@ -177,6 +177,7 @@ def make_loop_train_fn(
         step = 0
         for i in range(num_iterations):
             for _ in range(train_steps_per_iteration):
+                start_time = time.time()
                 key, rollout_key, learn_key = jax.random.split(key, 3)
                 # Collect trajectories from `state`
                 policy = policy_fn(state, False)
@@ -193,9 +194,13 @@ def make_loop_train_fn(
                 log_callback(state, utils.prefix_dict("train", train_metrics))
                 log_callback(state, utils.prefix_dict("env", env_info))
                 step += 1
+                end_time = time.time()
+                logger.info(f"Iteration {state.iteration} took {end_time - start_time:.2f} seconds.")
+                logger.info(f"SPS: {(num_envs * num_steps) / (end_time - start_time):.2f}")
             policy = policy_fn(state, not stochastic_eval)
             key, eval_key = jax.random.split(key)
-            eval_metrics = eval_fn(eval_key, policy)
+            eval_metrics, obs = eval_fn(eval_key, policy)
+            state = state.replace(last_obs=to_jax(obs).copy())
             state = state.replace(iteration=state.iteration + 1)
             log_callback(state, utils.prefix_dict("eval", eval_metrics))
         return state, {

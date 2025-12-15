@@ -62,6 +62,8 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
             last_env_state=None,
             time_steps=train_state.time_steps + num_steps * num_envs,
         )
+        print(transition.reward)
+        exit()
         return transitions, train_state
 
     return collect_rollout

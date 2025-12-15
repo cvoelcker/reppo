@@ -93,25 +93,39 @@ class IsaacLabEnv:
         self.current_returns = jnp.zeros(num_envs, dtype=jnp.float32)
         self.current_episode_len = jnp.zeros(num_envs, dtype=jnp.float32)
 
-        self.has_been_reset = False
 
     def reset(self, random_start_init: bool = True) -> jax.Array:
-        if self.has_been_reset:
-            raise RuntimeError(
-                "Environment has already been reset once. "
-                "Please create a new environment instance for a fresh start."
-            )
-        self.has_been_reset = True
         obs_dict, _ = self.envs.reset()
         # NOTE: decorrelate episode horizons like RSL‑RL
         if random_start_init:
             self.envs.unwrapped.episode_length_buf = torch.randint_like(
                 self.envs.unwrapped.episode_length_buf, high=int(self.max_episode_steps)
             )
+        else:
+            self.envs.unwrapped.episode_length_buf = torch.zeros_like(
+                self.envs.unwrapped.episode_length_buf
+            )
+        self.returns = jnp.zeros(self.num_envs, dtype=jnp.float32)
+        self.episode_len = jnp.zeros(self.num_envs, dtype=jnp.float32)
+        self.current_returns = jnp.zeros(self.num_envs, dtype=jnp.float32)
+        self.current_episode_len = jnp.zeros(self.num_envs, dtype=jnp.float32)
         return to_jax(obs_dict["policy"]), None
 
-    def reset_with_critic_obs(self) -> tuple[jax.Array, jax.Array]:
+    def reset_with_critic_obs(self, random_start_init: bool = True) -> tuple[jax.Array, jax.Array]:
         obs_dict, _ = self.envs.reset()
+        # NOTE: decorrelate episode horizons like RSL‑RL
+        if random_start_init:
+            self.envs.unwrapped.episode_length_buf = torch.randint_like(
+                self.envs.unwrapped.episode_length_buf, high=int(self.max_episode_steps)
+            )
+        else:
+            self.envs.unwrapped.episode_length_buf = torch.zeros_like(
+                self.envs.unwrapped.episode_length_buf
+            )
+        self.returns = jnp.zeros(self.num_envs, dtype=jnp.float32)
+        self.episode_len = jnp.zeros(self.num_envs, dtype=jnp.float32)
+        self.current_returns = jnp.zeros(self.num_envs, dtype=jnp.float32)
+        self.current_episode_len = jnp.zeros(self.num_envs, dtype=jnp.float32)
         return to_jax(obs_dict["policy"]), to_jax(obs_dict["critic"])
 
     def step(
@@ -123,6 +137,7 @@ class IsaacLabEnv:
             actions = torch.clamp(actions, self.action_bounds[0], self.action_bounds[1])
         obs_dict, rew, terminations, truncations, infos = self.envs.step(actions)
         dones = (terminations).to(dtype=torch.long)
+        truncations = (truncations).to(dtype=torch.long)
         obs = obs_dict["policy"]
         critic_obs = obs_dict["critic"] if self.asymmetric_obs else None
         
@@ -145,22 +160,22 @@ class IsaacLabEnv:
         self.current_episode_len = (1.0 - done_mask) * self.current_episode_len
         
         info_ret = {
-            "time_outs": to_jax(truncations), 
-            "observations": {"critic": to_jax(critic_obs) if critic_obs is not None else None},
+            "time_outs": to_jax(truncations).copy(), 
+            "observations": {"critic": to_jax(critic_obs).copy() if critic_obs is not None else None},
             "log_info": {
-                "return": self.returns,
-                "episode_len": self.episode_len,
+                "return": self.returns.copy(),
+                "episode_len": self.episode_len.copy(),
             }
         }
         # NOTE: There's really no way to get the raw observations from IsaacLab
         # We just use the 'reset_obs' as next_obs, unfortunately.
         # See https://github.com/isaac-sim/IsaacLab/issues/1362
         info_ret["observations"]["raw"] = {
-            "obs": to_jax(obs),
-            "critic_obs": to_jax(critic_obs) if critic_obs is not None else None,
+            "obs": to_jax(obs).copy(),
+            "critic_obs": to_jax(critic_obs).copy() if critic_obs is not None else None,
         }
 
-        return to_jax(obs), rew_jax, dones_jax, truncations_jax, info_ret
+        return to_jax(obs).copy(), rew_jax.copy(), dones_jax.copy(), truncations_jax.copy(), info_ret
 
     def render(self):
         raise NotImplementedError(

@@ -40,11 +40,11 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
                 _next_obs = next_obs
             # Record the transition
             transition = Transition(
-                obs=obs,
-                action=action,
-                reward=reward,
-                done=done,
-                truncated=truncated,
+                obs=obs.copy(),
+                action=action.copy(),
+                reward=reward.copy(),
+                done=done.copy(),
+                truncated=truncated.copy(),
                 extras={},
             )
             transitions.append(transition)
@@ -63,29 +63,24 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
 
 def make_eval_fn(env: gymnasium.Env, max_episode_steps: int) -> EvalFn:
     def evaluate(key: Key, policy: Policy) -> dict:
+        print(f"RUNNING FOR {max_episode_steps} STEPS")
         # Reset the environment
-        obs, _ = env.reset()
-        metrics = defaultdict(list)
+        obs, _ = env.reset(random_start_init=False)
         num_episodes = 0
+        all_done = jnp.zeros(env.num_envs, dtype=jnp.bool_)
         for i in range(max_episode_steps):
             key, act_key = jax.random.split(key)
             action, _ = policy(act_key, obs)
             next_obs, reward, terminated, truncated, infos = env.step(action)
-            if "final_info" in infos:
-                mask = infos["_final_info"]
-                num_episodes += mask.sum()
-                for k, v in infos["final_info"]["episode"].items():
-                    metrics[k].append(v)
             obs = next_obs
-
+            all_done = all_done | terminated | truncated
+            if jnp.all(all_done):
+                break
         eval_metrics = {}
-        for k, v in metrics.items():
+        for k, v in infos["log_info"].items():
             eval_metrics[f"{k}_std"] = np.array(v).std()
             eval_metrics[k] = np.array(v).mean()
-        eval_metrics["episode_return"] = eval_metrics.pop("return", 0.0)
-        eval_metrics["episode_return_std"] = eval_metrics.pop("return_std", 0.0)
-        eval_metrics["episode_length"] = eval_metrics.pop("episode_len", 0.0)
-        eval_metrics["episode_length_std"] = eval_metrics.pop("episode_len_std", 0.0)
-        return eval_metrics
+        obs, _ = env.reset(random_start_init=True)
+        return eval_metrics, obs
 
     return evaluate

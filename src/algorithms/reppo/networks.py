@@ -19,6 +19,42 @@ from src.networks.value_heads import (
 from src.networks.common import MLP, Identity, StateActionInput
 
 
+class SinusoidalEmbedding(nnx.Module):
+    """Sinusoidal embedding for scalar inputs.
+    
+    Takes a scalar input of shape (batch_size, 1) and produces an embedding
+    of shape (batch_size, embed_dim) using sine/cosine functions at different
+    frequencies. Used for conditioning on continuous scalar values like
+    target entropy.
+    """
+    def __init__(self, embed_dim: int = 16):
+        self.embed_dim = embed_dim
+        # Precompute frequency bands (log-spaced)
+        half_dim = embed_dim // 2
+        freqs = jnp.exp(
+            jnp.arange(half_dim) * -(math.log(100.0) / half_dim)
+        )  # (1, embed_dim // 2)
+        self.freqs = nnx.Param(freqs)
+    
+    def __call__(self, x: jax.Array) -> jax.Array:
+        """Embed scalar input.
+        
+        Args:
+            x: Input of shape (batch_size, 1), e.g. target entropy values
+            
+        Returns:
+            Embedding of shape (batch_size, embed_dim)
+        """
+        # x: (batch_size, 1)
+        # freqs: (embed_dim // 2,)
+        freqs = self.freqs.value
+        angles = jnp.outer(x, freqs).reshape(*x.shape, *freqs.shape)  # (batch_size, embed_dim // 2)
+        embeddings = jnp.concatenate(
+            [jnp.sin(angles), jnp.cos(angles)], axis=-1
+        )  # (batch_size, embed_dim)
+        return embeddings
+
+
 class Critic(nnx.Module):
     def __init__(
         self,
@@ -27,19 +63,27 @@ class Critic(nnx.Module):
         prediction_network: nnx.Module = None,
         asymmetric_obs: bool = False,
         is_discrete: bool = False,
+        entropy_embed_dim: int = 16,
     ):
         self.feature_encoder = feature_encoder
         self.q_network = q_network
         self.prediction_network = prediction_network
         self.asymmetric_obs = asymmetric_obs
         self.is_discrete = is_discrete
+        self.entropy_embedding = SinusoidalEmbedding(embed_dim=entropy_embed_dim)
+        self.entropy_embed_dim = entropy_embed_dim
 
-    def __call__(self, obs: jax.Array, action: jax.Array = None) -> jax.Array:
+    def __call__(self, obs: jax.Array, action: jax.Array = None, entropy_target: jax.Array = None) -> jax.Array:
         if self.asymmetric_obs:
             assert isinstance(obs, dict) and "privileged_state" in obs, (
                 "Privileged state must be provided for asymmetric observations."
             )
             obs = obs["privileged_state"]
+
+        # Embed entropy target and concatenate with observations before encoder
+        if entropy_target is not None:
+            entropy_emb = self.entropy_embedding(entropy_target)
+            obs = jnp.concatenate([obs, entropy_emb], axis=-1)
 
         if self.is_discrete:
             features = self.feature_encoder(obs)
@@ -64,28 +108,40 @@ class Actor(nnx.Module):
         kl_start: float = 0.1,
         ent_start: float = 0.1,
         asymmetric_obs: bool = False,
+        num_envs: int = 1,
+        entropy_embed_dim: int = 16,
     ):
         self.feature_encoder = feature_encoder
         self.policy_head = policy_head
         self.asymmetric_obs = asymmetric_obs
         self.log_lagrangian = nnx.Param(jnp.ones(1) * math.log(kl_start))
-        self.log_temperature = nnx.Param(jnp.ones(1) * math.log(ent_start))
+        self.log_temperature = nnx.Param(jnp.ones(num_envs) * math.log(ent_start))
+        self.entropy_embedding = SinusoidalEmbedding(embed_dim=entropy_embed_dim)
+        self.entropy_embed_dim = entropy_embed_dim
 
-    def __call__(self, obs: jax.Array, scale: jax.Array = 1.0) -> distrax.Distribution:
+    def __call__(self, obs: jax.Array, scale: jax.Array = 1.0, entropy_target: jax.Array = None) -> distrax.Distribution:
         if self.asymmetric_obs:
             assert isinstance(obs, dict) and "state" in obs, (
                 "State must be provided for actor."
             )
             obs = obs["state"]
+        # Embed entropy target and concatenate with observations before encoder
+        if entropy_target is not None:
+            entropy_emb = self.entropy_embedding(entropy_target)
+            obs = jnp.concatenate([obs, entropy_emb], axis=-1)
         features = self.feature_encoder(obs)
         return self.policy_head(features, scale=scale, deterministic=False)
 
-    def det_action(self, obs: jax.Array) -> jax.Array:
+    def det_action(self, obs: jax.Array, entropy_target: jax.Array = None) -> jax.Array:
         if self.asymmetric_obs:
             assert isinstance(obs, dict) and "state" in obs, (
                 "State must be provided for actor."
             )
             obs = obs["state"]
+        # Embed entropy target and concatenate with observations before encoder
+        if entropy_target is not None:
+            entropy_emb = self.entropy_embedding(entropy_target)
+            obs = jnp.concatenate([obs, entropy_emb], axis=-1)
         features = self.feature_encoder(obs)
         return self.policy_head(features, deterministic=True)
 
@@ -112,8 +168,9 @@ def make_continuous_actor(
     if encoder is not None:
         actor_encoder = encoder
     else:
+        entropy_embed_dim = hparams.get("entropy_embed_dim", 16)
         actor_encoder = MLP(
-            in_features=actor_observation_space.shape[0],
+            in_features=actor_observation_space.shape[0] + entropy_embed_dim,
             out_features=action_space.shape[0] * 2,
             hidden_dim=hparams.actor_hidden_dim,
             hidden_activation=nnx.swish,
@@ -131,6 +188,8 @@ def make_continuous_actor(
         kl_start=hparams.kl_start,
         ent_start=hparams.ent_start,
         asymmetric_obs=cfg.env.get("asymmetric_observation", False),
+        num_envs=hparams.num_envs,
+        entropy_embed_dim=hparams.get("entropy_embed_dim", 16),
     )
     return actor
 
@@ -147,12 +206,13 @@ def make_continuous_critic(
     if encoder is not None:
         feature_encoder = encoder
     else:
+        entropy_embed_dim = hparams.get("entropy_embed_dim", 16)
         feature_encoder = nnx.Sequential(
             StateActionInput(
                 concatenate=True,
             ),
             MLP(
-                in_features=observation_space.shape[0] + action_space.shape[0],
+                in_features=observation_space.shape[0] + entropy_embed_dim + action_space.shape[0],
                 out_features=hparams.critic_hidden_dim,
                 hidden_dim=hparams.critic_hidden_dim,
                 hidden_activation=nnx.swish,
@@ -208,6 +268,7 @@ def make_continuous_critic(
         prediction_network=pred_module,
         asymmetric_obs=cfg.env.get("asymmetric_observation", False),
         is_discrete=False,
+        entropy_embed_dim=hparams.get("entropy_embed_dim", 16),
     )
     return critic
 
@@ -221,12 +282,13 @@ def make_discrete_actor(
     rngs: nnx.Rngs,
 ) -> Actor:
     hparams = cfg.algorithm
+    entropy_embed_dim = hparams.get("entropy_embed_dim", 16)
     if encoder is not None:
         actor_encoder = encoder
         in_features = hparams.actor_hidden_dim
     else:
         actor_encoder = Identity()
-        in_features = observation_space.shape[0]
+        in_features = observation_space.shape[0] + entropy_embed_dim
     actor_head = MLP(
             in_features=in_features,
             out_features=action_space.n,
@@ -250,6 +312,8 @@ def make_discrete_actor(
         kl_start=hparams.kl_start,
         ent_start=hparams.ent_start,
         asymmetric_obs=cfg.env.get("asymmetric_observation", False),
+        num_envs=hparams.num_envs,
+        entropy_embed_dim=hparams.get("entropy_embed_dim", 16),
     )
     return actor
 
@@ -263,11 +327,12 @@ def make_discrete_critic(
     rngs: nnx.Rngs,
 ) -> Critic:
     hparams = cfg.algorithm
+    entropy_embed_dim = hparams.get("entropy_embed_dim", 16)
     if encoder is not None:
         feature_encoder = encoder
     else:
         feature_encoder = MLP(
-            in_features=observation_space.shape[0],
+            in_features=observation_space.shape[0] + entropy_embed_dim,
             out_features=hparams.critic_hidden_dim,
             hidden_dim=hparams.critic_hidden_dim,
             hidden_activation=nnx.swish,
@@ -325,6 +390,7 @@ def make_discrete_critic(
         prediction_network=pred_module,
         asymmetric_obs=cfg.env.get("asymmetric_observation", False),
         is_discrete=True,
+        entropy_embed_dim=hparams.get("entropy_embed_dim", 16),
     )
     return critic
 
@@ -337,8 +403,8 @@ def make_continuous_ff_networks(
     rngs: nnx.Rngs,
 ) -> tuple[Actor, Critic]:
     if cfg.env.get("asymmetric_observation", False):
-        q_observation_space = observation_space.spaces["privileged_state"]
-        actor_observation_space = observation_space.spaces["state"]
+        q_observation_space = observation_space["critic"]
+        actor_observation_space = observation_space["policy"]
     else:
         q_observation_space = observation_space
         actor_observation_space = observation_space

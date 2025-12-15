@@ -195,12 +195,6 @@ def make_learner_fn(
     def update(train_state: PPOTrainState, batch: Transition):
         # Sample data at indices from the batch
 
-        if algo_cfg.normalize_advantages:
-            advantages = batch.extras["advantage"]
-            batch.extras["advantage"] = (advantages - jnp.mean(advantages)) / (
-                jnp.std(advantages) + 1e-8
-            )
-
         grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
         output, grads = grad_fn(train_state.params, train_state, batch)
 
@@ -286,12 +280,11 @@ def make_learner_fn(
             gae, next_value = carry
             done = transition.done
             truncated = transition.truncated
-            reward = transition.reward
             value = transition.extras["value"]
-            delta = reward + algo_cfg.gamma * next_value * (1 - done) - value
-            gae = delta + algo_cfg.gamma * algo_cfg.lmbda * (1 - done) * gae
-            truncated_gae = reward
-            gae = jnp.where(truncated, truncated_gae, gae)
+            reward = transition.reward + truncated * value
+            termination = 1.0 * done * truncated
+            delta = reward + algo_cfg.gamma * next_value * (1 - termination) - value
+            gae = delta + algo_cfg.gamma * algo_cfg.lmbda * (1 - termination) * gae
             return (gae, value), gae
 
         # Compute the advantage using GAE
@@ -301,7 +294,12 @@ def make_learner_fn(
             batch,
             reverse=True,
         )
+
         target_values = advantages + batch.extras["value"]
+        if algo_cfg.normalize_advantages:
+            advantages = (advantages - jnp.mean(advantages)) / (
+                jnp.std(advantages) + 1e-8
+            )
         batch.extras["advantage"] = advantages
         batch.extras["target_value"] = target_values
 

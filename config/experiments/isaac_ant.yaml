@@ -1,9 +1,16 @@
 # @package _global_
 algorithm:
   gamma: 0.99
-  critic_hidden_dim: 512
+  lmbda: 0.95
+  critic_hidden_dim: 1024
+  actor_hidden_dim: 512
   num_envs: 4096
   num_steps: 32
-  num_mini_batches: 4
-  num_epochs: 4
-  kl_bound: 0.1
+  num_mini_batches: 8
+  num_epochs: 8
+  max_grad_norm: 100.0
+  kl_bound: 0.2
+  num_eval: 50
+  aux_loss_mult: 0.0
+  ent_start: 0.01
+  entropy_target_range: [0.5, 0.5]

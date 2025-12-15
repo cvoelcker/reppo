@@ -31,18 +31,28 @@ def make_policy_fn(
     cfg = cfg.algorithm
     offset = None
 
+    entropy_target = jnp.linspace(
+        cfg.entropy_target_range[0], cfg.entropy_target_range[1], cfg.num_envs
+    )
     def policy_fn(train_state: REPPOTrainState, eval: bool) -> Policy:
         normalizer = Normalizer()
         actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
+        critic_model = nnx.merge(train_state.critic.graphdef, train_state.critic.params)
 
         def policy(key: Key, obs: jax.Array, **kwargs) -> tuple[jax.Array, dict]:
+
             if train_state.normalization_state is not None:
                 obs = normalizer.normalize(train_state.normalization_state, obs)
 
             if eval:
-                action: jax.Array = actor_model.det_action(obs)
+                _entropy_target = jnp.linspace(cfg.entropy_target_range[0], cfg.entropy_target_range[1], 5)[None].repeat(obs.shape[0], axis=0)
+                obs = obs[:, None].repeat(5, axis=1)
+                action: jax.Array = actor_model.det_action(obs, entropy_target=_entropy_target)
+                q = critic_model(obs, action, entropy_target=_entropy_target)["value"]
+                max_q_idx = jnp.argmax(q, axis=1)
+                action = action[jnp.arange(action.shape[0]), max_q_idx]
             else:
-                pi = actor_model(obs, scale=offset)
+                pi = actor_model(obs, scale=offset, entropy_target=entropy_target)
                 action = pi.sample(seed=key)
 
             if isinstance(action_space, Box):
@@ -126,11 +136,15 @@ def make_learner_fn(
     discrete_actions = isinstance(action_space, Discrete)
     d = action_space.shape[0] if not discrete_actions else action_space.n
 
+    _entropy_target = jnp.linspace(
+        hparams.entropy_target_range[0], hparams.entropy_target_range[1], hparams.num_envs
+    )
     def critic_loss_fn(
         params: nnx.Param, train_state: REPPOTrainState, minibatch: Transition
     ):
         critic_model = nnx.merge(train_state.critic.graphdef, params)
-        critic_output = critic_model(minibatch.obs, minibatch.action)
+        entropy_target = minibatch.extras.get("entropy_target", None)
+        critic_output = critic_model(minibatch.obs, minibatch.action, entropy_target=entropy_target)
 
         target_values = minibatch.extras["target_values"]
 
@@ -166,15 +180,15 @@ def make_learner_fn(
         )
         critic_loss = jnp.mean(critic_loss)
         loss = jnp.mean(
-            (1.0 - minibatch.truncated)
+            (1.0 - minibatch.truncated.reshape(-1))
             * (critic_update_loss + hparams.aux_loss_mult * aux_loss)
         )
         return loss, dict(
-            value_loss=critic_loss,
-            critic_update_loss=critic_update_loss,
-            loss=loss,
-            aux_loss=aux_loss,
-            rew_aux_loss=aux_rew_loss,
+            value_loss=critic_loss.mean(),
+            critic_update_loss=critic_update_loss.mean(),
+            loss=loss.mean(),
+            aux_loss=aux_loss.mean(),
+            rew_aux_loss=aux_rew_loss.mean(),
             q=value.mean(),
             abs_batch_action=jnp.abs(minibatch.action).mean(),
             reward_mean=minibatch.reward.mean(),
@@ -192,14 +206,15 @@ def make_learner_fn(
         actor_target_model = nnx.merge(
             train_state.actor.graphdef, train_state.actor_target.params
         )
-        pi = actor_model(minibatch.obs)
-        old_pi = actor_target_model(minibatch.obs)
+        entropy_target = minibatch.extras.get("entropy_target", None)
+        pi = actor_model(minibatch.obs, entropy_target=entropy_target)
+        old_pi = actor_target_model(minibatch.obs, entropy_target=entropy_target)
 
         # policy KL constraint
         kl = compute_policy_kl(minibatch=minibatch, pi=pi, old_pi=old_pi)
-        alpha = jax.lax.stop_gradient(actor_model.temperature())
+        alpha = jax.lax.stop_gradient(actor_model.temperature())[minibatch.extras["index"]]
         if discrete_actions:
-            critic_pred = critic_target_model(minibatch.obs)
+            critic_pred = critic_target_model(minibatch.obs, entropy_target=entropy_target)
             value = critic_pred["value"]
             actor_loss = jnp.sum(pi.probs * ((alpha * pi.logits) - value), axis=-1)
             entropy = pi.entropy()
@@ -235,7 +250,8 @@ def make_learner_fn(
                     seed=minibatch.extras["action_key"], sample_shape=(num_samples,)  # WARNING: magic number
                 )
                 obs = jnp.repeat(minibatch.obs[None, ...], pred_action.shape[0], axis=0)
-                critic_pred = critic_target_model(obs, pred_action)
+                entropy_target_expanded = jnp.repeat(entropy_target[None, ...], pred_action.shape[0], axis=0) if entropy_target is not None else None
+                critic_pred = critic_target_model(obs, pred_action, entropy_target=entropy_target_expanded)
                 value = critic_pred["value"].sum(axis=0, keepdims=True)
                 value = (value - critic_pred["value"]) / (critic_pred["value"].shape[0] - 1)
                 adv = critic_pred["value"] - value
@@ -247,7 +263,7 @@ def make_learner_fn(
                     seed=minibatch.extras["action_key"]
                 )
                 obs = minibatch.obs
-                critic_pred = critic_target_model(obs, pred_action)
+                critic_pred = critic_target_model(obs, pred_action, entropy_target=entropy_target)
                 value = critic_pred["value"]
                 actor_loss = log_prob * alpha - value
                 entropy = -log_prob
@@ -256,7 +272,7 @@ def make_learner_fn(
                 raise ValueError(
                     f"Unknown gradient estimator: {hparams.gradient_estimator}"
                 )
-            action_size_target = d * hparams.ent_target_mult
+            action_size_target = d * _entropy_target[minibatch.extras["index"]]
 
         lagrangian = actor_model.lagrangian()
 
@@ -278,12 +294,13 @@ def make_learner_fn(
             raise ValueError(f"Unknown actor loss mode: {hparams.actor_kl_clip_mode}")
 
         # SAC target entropy loss
+        # jax.debug.print("action size target {}", action_size_target, ordered=True)
+        # jax.debug.print("entropy {}", entropy, ordered=True)
 
         target_entropy = action_size_target + entropy
-        target_entropy_loss = actor_model.temperature() * jax.lax.stop_gradient(
+        target_entropy_loss = actor_model.temperature()[minibatch.extras["index"]] * jax.lax.stop_gradient(
             target_entropy
         )
-
         # Lagrangian constraint (follows temperature update)
         lagrangian_loss = -lagrangian * jax.lax.stop_gradient(kl - hparams.kl_bound)
 
@@ -294,23 +311,24 @@ def make_learner_fn(
             loss += jnp.mean(lagrangian_loss)
 
         return loss, dict(
-            actor_loss=actor_loss,
-            loss=loss,
-            temp=actor_model.temperature(),
+            actor_loss=actor_loss.mean(),
+            loss=loss.mean(),
+            temp=actor_model.temperature().mean(),
             abs_batch_action=jnp.abs(minibatch.action).mean(),
             abs_pred_action=jnp.abs(pred_action).mean()
             if not discrete_actions
             else 0.0,
             reward_mean=minibatch.reward.mean(),
             kl=kl.mean(),
-            lagrangian=lagrangian,
-            lagrangian_loss=lagrangian_loss,
-            entropy=entropy,
-            entropy_loss=target_entropy_loss,
+            lagrangian=lagrangian.mean(),
+            lagrangian_loss=lagrangian_loss.mean(),
+            entropy=entropy.mean(),
+            entropy_loss=target_entropy_loss.mean(),
             target_values=minibatch.extras["target_values"].mean(),
             done_mean=minibatch.done.mean(),
             truncated_mean=minibatch.truncated.mean(),
             both_term_trunc_mean=(minibatch.done * minibatch.truncated).mean(),
+            clipped_kl_fraction=jnp.mean((kl > hparams.kl_bound).astype(jnp.float32)),
         )
 
     def compute_policy_kl(
@@ -404,20 +422,25 @@ def make_learner_fn(
             # combine importance_weights with TD lambda
             done = transition.done
             reward = transition.extras["soft_reward"]
-            value = transition.extras["value"]
             policy_value = transition.extras["policy_value"]
             lambda_sum = (
-                hparams.lmbda * lambda_return + (1 - hparams.lmbda) * value
+                hparams.lmbda * lambda_return + (1 - hparams.lmbda) * next_value
             )
-            lambda_return = reward + hparams.gamma * jnp.where(truncated, policy_value, (1.0 - done) * lambda_sum)
+            lambda_return = reward + hparams.gamma * jnp.where(truncated, next_value, (1.0 - done) * lambda_sum)
+            # jax.debug.print("R {}", reward, ordered=True)
+            # jax.debug.print("T {}", truncated, ordered=True)
+            # jax.debug.print("D {}", done, ordered=True)
+            # jax.debug.print("N {}", next_value, ordered=True)
+            # jax.debug.print("L {}", lambda_sum, ordered=True)
+            # jax.debug.print("Lambda return {}", lambda_return, ordered=True)
 
             # GAE for policy
             delta = reward + hparams.gamma * (1.0 - done) * next_value - policy_value
             gae = delta + hparams.gamma * (1.0 - done) * hparams.lmbda * gae
-            truncated_gae = reward + hparams.gamma * (1.0 - done) * next_value - value
-            gae = jnp.where(truncated, truncated_gae, gae)
-
+            gae = jnp.where(truncated, delta, gae)
+            
             truncated = transition.truncated
+
             return (
                 lambda_return,
                 gae,
@@ -438,33 +461,61 @@ def make_learner_fn(
             xs=batch,
             reverse=True,
         )
+        # jax.debug.print("Target values range - min: {}, max: {}", target_values.min(), target_values.max(), ordered=True)
+        # # print index of smallest target value
+        # jax.debug.print("Target value min idx {}", jnp.argmin(target_values), ordered=True)
+
+        # jax.debug.print("Average done reward {}", jnp.sum(batch.reward * batch.done) / (jnp.sum(batch.done) + 1e-8), ordered=True)
+        # jax.debug.print("Average truncated reward {}", jnp.sum(batch.reward * batch.truncated) / (jnp.sum(batch.truncated) + 1e-8), ordered=True)
+
+        # jax.debug.print("Reward stats - min: {}, max: {}, mean: {}", batch.reward.min(), batch.reward.max(), batch.reward.mean(), ordered=True)
+        # jax.debug.print("Soft reward stats - min: {}, max: {}, mean: {}", batch.extras["soft_reward"].min(), batch.extras["soft_reward"].max(), batch.extras["soft_reward"].mean(), ordered=True)
+        # jax.debug.print("Done stats - min: {}, max: {}, mean: {}", batch.done.min(), batch.done.max(), batch.done.mean(), ordered=True)
+        # jax.debug.print("Truncated stats - min: {}, max: {}, mean: {}", batch.truncated.min(), batch.truncated.max(), batch.truncated.mean(), ordered=True)
+        # min_reward_sequence = jnp.argmin(jnp.mean(target_values, axis=0))
+        # jax.debug.print("Reward sequence at min reward index: {}", batch.reward[:, min_reward_sequence], ordered=True)
+        # jax.debug.print("Soft reward sequence at min reward index: {}", batch.extras["soft_reward"][:, min_reward_sequence], ordered=True)
+        # jax.debug.print("Value sequence at min reward index: {}", batch.extras["value"][:, min_reward_sequence], ordered=True)
+        # jax.debug.print("Target value sequence at min reward index: {}", target_values[:, min_reward_sequence], ordered=True)
+        # jax.debug.print("Done sequence at min reward index: {}", batch.done[:, min_reward_sequence], ordered=True)
+        # jax.debug.print("Truncated sequence at min reward index: {}", batch.truncated[:, min_reward_sequence], ordered=True)
         return target_values, target_advs
 
     def compute_extras(key: Key, train_state: REPPOTrainState, batch: Transition):
         offset = None
+        normalizer = Normalizer()
+        normalizer_state = train_state.normalization_state
 
         last_obs = train_state.last_obs
         if hparams.normalize_env:
             last_obs = normalizer.normalize(train_state.normalization_state, last_obs)
 
+        entropy_target = jnp.expand_dims(_entropy_target, 0).repeat(batch.obs.shape[0], axis=0)
+
         actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
         critic_model = nnx.merge(train_state.critic.graphdef, train_state.critic.params)
-        critic_output = critic_model(batch.obs, batch.action)
+        critic_output = critic_model(batch.obs, batch.action, entropy_target=entropy_target)
         emb = critic_output["embed"]
         value = critic_output["value"]
-        og_pi = actor_model(batch.obs)
-        pi = actor_model(batch.obs, scale=offset)
+        value = normalizer.denormalize_returns(normalizer_state, value)
+        og_pi = actor_model(batch.obs, entropy_target=entropy_target)
+        pi = actor_model(batch.obs, scale=offset, entropy_target=entropy_target)
         key, act_key = jax.random.split(key)
 
-        last_action, last_log_prob = actor_model(last_obs).sample_and_log_prob(
+        last_action, last_log_prob = actor_model(last_obs, entropy_target=entropy_target[0]).sample_and_log_prob(
             seed=act_key
         )
-        last_critic_output = critic_model(last_obs, last_action)
+        last_critic_output = critic_model(last_obs, last_action, entropy_target=entropy_target[0])
         last_emb = last_critic_output["embed"]
         last_value = last_critic_output["value"]
+        last_value = normalizer.denormalize_returns(normalizer_state, last_value)
 
         log_probs = pi.log_prob(batch.action.clip(-0.999,0.999))
         next_log_prob = jnp.concatenate([log_probs[1:], last_log_prob[None]], axis=0)
+        # jax.debug.print("Log probs {}", log_probs[0], ordered=True)
+
+        # Compute correlation between index and log_prob for each sequence step, then average
+        # index shape: (num_steps, num_envs), log_probs shape: (num_steps, num_envs)
 
         soft_reward = (
             batch.reward - hparams.gamma * next_log_prob * actor_model.temperature()
@@ -482,17 +533,36 @@ def make_learner_fn(
         if hparams.scale_samples_with_action_d:
             num_samples = 8 * d
         else:
-            num_samples = 8
-        actions = pi.sample(seed=act_key, sample_shape=(num_samples,))  # WARNING: magic number
+            num_samples = 4
+        actions, expanded_log_probs = pi.sample_and_log_prob(seed=act_key, sample_shape=(num_samples,))  # WARNING: magic number
         actions = jnp.clip(actions, -0.999, 0.999)
         obs = jnp.repeat(batch.obs[None, ...], actions.shape[0], axis=0)
-        policy_value = critic_model(obs, actions)["value"].mean(0)
+        entropy_target_expanded = jnp.repeat(entropy_target[None, ...], actions.shape[0], axis=0) if entropy_target is not None else None
+        policy_value = critic_model(obs, actions, entropy_target=entropy_target_expanded)["value"].mean(0)
+        policy_value = normalizer.denormalize_returns(normalizer_state, policy_value)
+        
+        index = jnp.arange(batch.reward.shape[1])[None, :].repeat(batch.reward.shape[0], axis=0)
+        # For each step, compute Pearson correlation between index and log_probs
+        def compute_correlation(idx_row, log_prob_row):
+            # Pearson correlation: cov(x, y) / (std(x) * std(y))
+            idx_centered = idx_row - idx_row.mean()
+            lp_centered = log_prob_row - log_prob_row.mean()
+            cov = (idx_centered * lp_centered).mean()
+            std_idx = jnp.sqrt((idx_centered ** 2).mean())
+            std_lp = jnp.sqrt((lp_centered ** 2).mean())
+            corr = cov / (std_idx * std_lp + 1e-8)
+            return corr
+        correlations = jax.vmap(compute_correlation)(index, expanded_log_probs.mean(0))
+        mean_correlation = correlations.mean()
+        jax.debug.print("Index-LogProb correlation (avg over {} steps): {}", correlations.shape[0], mean_correlation, ordered=True)
 
         # final_value
-        actions = actor_model(last_obs).sample(seed=act_key, sample_shape=(num_samples,))  # WARNING: magic number
+        actions  = actor_model(last_obs, entropy_target=entropy_target[0]).sample(seed=act_key, sample_shape=(num_samples,))  # WARNING: magic number
         actions = jnp.clip(actions, -0.999, 0.999)
         obs = jnp.repeat(last_obs[None, ...], actions.shape[0], axis=0)
-        final_value = critic_model(obs, actions)["value"].mean(0)
+        entropy_target_expanded_last = jnp.repeat(entropy_target[None, 0], actions.shape[0], axis=0)
+        final_value = critic_model(obs, actions, entropy_target=entropy_target_expanded_last)["value"].mean(0)
+        final_value = normalizer.denormalize_returns(normalizer_state, final_value)
 
         extras = {
             "soft_reward": soft_reward * cfg.env.get("reward_scaling", 1.0),
@@ -502,6 +572,8 @@ def make_learner_fn(
             "next_emb": jnp.concatenate([emb[1:], last_emb[None]], axis=0),
             "importance_weight": importance_weight,
             "log_prob": log_probs,
+            "entropy_target": entropy_target,
+            "index": jnp.arange(batch.reward.shape[1])[None, :].repeat(batch.reward.shape[0], axis=0),
         }
         return extras
 
@@ -522,7 +594,15 @@ def make_learner_fn(
         extras = compute_extras(key=act_key, train_state=train_state, batch=batch)
         batch.extras.update(extras)
 
-        batch.extras["target_values"], batch.extras["target_advs"] = nstep_lambda(batch=batch)
+        target_values, target_adv = nstep_lambda(batch=batch)
+        new_norm_state = normalizer.update_returns(train_state.normalization_state, target_values)
+        train_state = train_state.replace(normalization_state=new_norm_state)
+        batch.extras["target_values"] = normalizer.normalize_returns(
+            train_state.normalization_state, target_values
+        )
+        batch.extras["target_advs"] = normalizer.normalize_returns(
+            train_state.normalization_state, target_adv
+        )
 
         # Reshape data to (num_steps * num_envs, ...)
 

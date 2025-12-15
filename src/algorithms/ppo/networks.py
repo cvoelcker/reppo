@@ -38,7 +38,7 @@ class PPONetworks(nnx.Module):
             action_dim = action_space.n
         else:
             action_dim = action_space.shape[-1]
-            self.log_std = nnx.Param(jnp.ones(action_dim) * -1.0)
+            self.log_std = nnx.Param(jnp.zeros(action_dim))
 
         def linear_layer(in_features, out_features, scale=jnp.sqrt(2)):
             return nnx.Linear(
@@ -53,12 +53,16 @@ class PPONetworks(nnx.Module):
             linear_layer(obs_dim, hidden_dim),
             nnx.elu,
             linear_layer(hidden_dim, hidden_dim),
-            nnx.tanh,
-            linear_layer(hidden_dim, action_dim, scale=0.01),
+            nnx.elu,
+            linear_layer(hidden_dim, hidden_dim),
+            nnx.elu,
+            linear_layer(hidden_dim, action_dim),
         )
 
         self.critic_module = nnx.Sequential(
             linear_layer(critic_obs_dim, hidden_dim),
+            nnx.elu,
+            linear_layer(hidden_dim, hidden_dim),
             nnx.elu,
             linear_layer(hidden_dim, hidden_dim),
             nnx.elu,
