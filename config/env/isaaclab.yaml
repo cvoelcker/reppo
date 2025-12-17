@@ -7,5 +7,5 @@ reward_scaling: 1.0
 asymmetric_observation: False
 seed: ${seed}
 
-vmin: -3
-vmax: 3
+vmin: -10
+vmax: 10

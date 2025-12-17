@@ -595,8 +595,8 @@ def make_learner_fn(
         batch.extras.update(extras)
 
         target_values, target_adv = nstep_lambda(batch=batch)
-        new_norm_state = normalizer.update_returns(train_state.normalization_state, target_values)
-        train_state = train_state.replace(normalization_state=new_norm_state)
+        # new_norm_state = normalizer.update_returns(train_state.normalization_state, target_values)
+        # train_state = train_state.replace(normalization_state=new_norm_state)
         batch.extras["target_values"] = normalizer.normalize_returns(
             train_state.normalization_state, target_values
         )
