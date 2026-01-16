@@ -7,6 +7,7 @@ from omegaconf import DictConfig, OmegaConf
 from src.algorithms import envs, utils
 from src.common import InitFn, LearnerFn, PolicyFn
 from src.cfg_utils import fix_cfg
+from src.maniskill_utils.maniskill_env import OfflineDatasetEnv
 
 logging.basicConfig(level=logging.INFO)
 
@@ -31,7 +32,8 @@ def main(cfg: DictConfig):
     )
 
     key = jax.random.PRNGKey(cfg.seed)
-    env_setup = envs.make_env(cfg)
+    # env_setup = envs.make_env(cfg)
+    env_setup = OfflineDatasetEnv()
     init_fn: InitFn = hydra.utils.call(cfg.algorithm.init)(
         cfg=cfg,
         observation_space=env_setup.observation_space,
@@ -47,11 +49,11 @@ def main(cfg: DictConfig):
         action_space=env_setup.action_space,
         observation_space=env_setup.observation_space,
     )
-    rollout_fn = hydra.utils.call(cfg.runner.rollout_fn)(env=env_setup.env)
-    eval_fn = hydra.utils.call(cfg.runner.eval_fn)(env=env_setup.eval_env)
+    rollout_fn = hydra.utils.call(cfg.runner.rollout_fn)(env_setup)
+    eval_fn = hydra.utils.call(cfg.runner.eval_fn)(env_setup)
     make_train_fn = hydra.utils.call(cfg.runner.train_fn)
     train_fn = make_train_fn(
-        env=(env_setup.env, env_setup.eval_env),
+        env=(env_setup, env_setup),
         init_fn=init_fn,
         learner_fn=learner_fn,
         policy_fn=policy_fn,

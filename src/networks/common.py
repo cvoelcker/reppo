@@ -69,7 +69,7 @@ class MLP(nnx.Module):
             use_norm=use_norm,
             activation=hidden_activation,
         )
-        self.main_layers = [
+        self.main_layers = nnx.List([
             normed_activation_layer(
                 rngs,
                 hidden_dim,
@@ -78,7 +78,7 @@ class MLP(nnx.Module):
                 activation=hidden_activation,
             )
             for _ in range(layers - 2)
-        ]
+        ]) # nnx.List is the correct way to store a list of submodules or arrays in Flax nnx (>=0.12.0), as regular Python lists are not allowed for static attributes containing JAX arrays or submodules.
         self.norm = nnx.LayerNorm(in_features, rngs=rngs)
         self.output_layer = normed_activation_layer(
             rngs,

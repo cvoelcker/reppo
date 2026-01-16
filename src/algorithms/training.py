@@ -15,12 +15,14 @@ from src.common import (
 )
 from src.algorithms import utils
 import jax.numpy as jnp
+from src.maniskill_utils.maniskill_env import OfflineDatasetEnv
 
 from src.env_utils.torch_wrappers.maniskill_wrapper import to_jax
 
 
 def make_scan_train_fn(
-    env: Environment | tuple[Environment, Environment],
+    # env : OfflineDatasetEnv(),
+    env: gymnasium.Env | tuple[gymnasium.Env, gymnasium.Env],
     total_time_steps: int,
     num_steps: int,
     num_envs: int,
@@ -35,9 +37,9 @@ def make_scan_train_fn(
     rollout_fn: RolloutFn | None = None,
     log_callback: LogCallback | None = None,
 ) -> TrainFn:
-    from src.runners.gymnax_runner import (
-        make_eval_fn as make_gymnax_eval_fn,
-        make_rollout_fn as make_gymnax_rollout_fn,
+    from src.runners.maniskill_runner import (
+        make_eval_fn as make_eval_fn,
+        make_rollout_fn as make_rollout_fn,
     )
 
     # Initialize the environment and wrap it to admit vectorized behavior.
@@ -49,10 +51,10 @@ def make_scan_train_fn(
     eval_interval = int((total_time_steps / (num_steps * num_envs)) // num_eval)
 
     if eval_fn is None:
-        eval_fn = make_gymnax_eval_fn(eval_env, max_episode_steps)
+        eval_fn = make_eval_fn(eval_env, max_episode_steps)
 
     if rollout_fn is None:
-        rollout_fn = make_gymnax_rollout_fn(env, num_steps=num_steps, num_envs=num_envs)
+        rollout_fn = make_rollout_fn(env, num_steps=num_steps, num_envs=num_envs)
 
     if log_callback is None:
         log_callback = lambda state, metrics: None
@@ -127,6 +129,7 @@ def make_scan_train_fn(
 
 
 def make_loop_train_fn(
+    # env : OfflineDatasetEnv(),
     env: gymnasium.Env | tuple[gymnasium.Env, gymnasium.Env],
     total_time_steps: int,
     num_steps: int,
@@ -141,9 +144,9 @@ def make_loop_train_fn(
     eval_fn: EvalFn | None = None,
     log_callback: LogCallback | None = None,
 ):
-    from src.runners.gymnasium_runner import (
-        make_eval_fn as make_gymnasium_eval_fn,
-        make_rollout_fn as make_gymnasium_rollout_fn,
+    from src.runners.maniskill_runner import (
+        make_eval_fn as make_eval_fn,
+        make_rollout_fn as make_rollout_fn,
     )
 
     train_log_interval = int((total_time_steps / (num_steps * num_envs)) // num_eval)

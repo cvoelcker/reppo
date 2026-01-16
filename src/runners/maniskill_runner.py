@@ -36,6 +36,8 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
                 _next_obs = to_jax(info["final_observation"])
             else:
                 _next_obs = next_obs
+            print('Inside Maniskill Runner:')
+            print(f'Current Step: {prev_step + i + 1}, Current Observation: {obs.shape}, Next Observation : {_next_obs.shape} Reward: {reward.shape}, Done: {done.shape}, Truncated: {truncated.shape}')
             # Record the transition
             transition = Transition(
                 obs=obs,
