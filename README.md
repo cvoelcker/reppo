@@ -1,5 +1,9 @@
 # Relative Entropy Pathwise Policy Optimization 
 
+> [!NOTE]
+> We are building more accessible versions of REPPO (meaning they are in Torch ;) ) that can be integrated with well-established RL frameworks. To kick things off, take a look at our rsl_rl implementation:
+> * https://github.com/cvoelcker/rsl_rl: RSL RL is a popular framework that integrates well with IsaacLab and other robotics simulators
+
 ## On-policy value-based reinforcement learning without endless hyperparameter tuning
 
 This repository contains the official implementation for REPPO - Relative Entropy Pathwise Policy Optimization [arXiv paper link](https://arxiv.org/abs/2507.11019).
