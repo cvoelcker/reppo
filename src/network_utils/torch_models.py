@@ -4,7 +4,7 @@ from torch.distributions import constraints
 from torch.distributions.transforms import Transform
 from torch.distributions.normal import Normal
 
-from src.torchrl.reppo import hl_gauss
+from src.torchrl.reppo_util import hl_gauss
 
 
 class TanhTransform(Transform):
@@ -56,9 +56,9 @@ class TanhTransform(Transform):
 
 
 def get_activation(name):
-    if name == "swish":
-        return nn.swish()
-    elif name == "relu":
+    # if name == "swish":
+    #     return nn.swish()
+    if name == "relu":
         return nn.ReLU()
     elif name == "swish":
         return nn.SiLU()
@@ -318,20 +318,38 @@ class Actor(nn.Module):
         )
         self.min_std = min_std
 
-    def forward(self, obs: torch.Tensor) -> torch.distributions.Distribution:
+    def forward(self, obs):
+        """
+        obs: [B, n_obs] tensor
+        returns: Tanh-transformed distribution, tanh(mean), temperature, lagrange
+        """
+        # Pass through the network
         x = self.model(obs)
+
+        # Split mean and log_std
         mean, log_std = torch.split(x, x.shape[-1] // 2, dim=-1)
-        std = torch.exp(log_std) + self.min_std
+
+        # --- Constrain std but keep gradient flow ---
+        # Instead of clamp which blocks gradient, use tanh to squash to reasonable range
+        LOG_STD_MAX = 2.0
+        LOG_STD_MIN = -5.0
+        log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (torch.tanh(log_std) + 1.0)
+        std = torch.exp(log_std)
+
+        # Create base Normal distribution
         pi = Normal(mean, std, validate_args=False)
 
+        # Tanh transform to keep actions in [-1, 1]
         transformed_pi = torch.distributions.TransformedDistribution(
-            pi, [torch.distributions.TanhTransform()]
+            pi, [torch.distributions.TanhTransform(cache_size=1)]
         )
+
+        # Return the transformed distribution and other info for BC / SAC
         return (
             transformed_pi,
-            torch.tanh(mean),
-            torch.exp(self.log_temp),
-            torch.exp(self.log_lagrange),
+            torch.tanh(mean),        # deterministic mean action
+            torch.exp(self.log_temp),   # temperature
+            torch.exp(self.log_lagrange),  # lagrange for KL / entropy
         )
 
 
