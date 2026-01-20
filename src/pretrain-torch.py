@@ -3,6 +3,7 @@ import numpy as np
 import hydra
 import torch
 import torch.optim as optim
+import matplotlib.pyplot as plt
 from datetime import datetime
 from tensordict import TensorDict
 from torch.amp import GradScaler
@@ -14,6 +15,8 @@ from src.maniskill_utils.maniskill_dataloader_shabnam import load_demos_for_trai
 def train_one_epoch(epoch_index, tb_writer):
     running_loss = 0.
     last_loss = 0.
+    num_train_batches = 0
+    train_loss_sum = 0.0
 
     # Here, we use enumerate(train_loader) instead of iter(train_loader) so that we can track the batch index and do some intra-epoch reporting
     for i, data in enumerate(train_loader):
@@ -37,10 +40,12 @@ def train_one_epoch(epoch_index, tb_writer):
         # Extract the log probability of the actions instead of raw probabilities (for more stability and better gradient flow especially while dealing with very small probailities)
         # print(expert_action)
         log_prob = dist.log_prob(expert_action)  # [B, action_dim]
-        log_prob_per_dim = -log_prob
-        # print(log_prob)
+
+        # storing average per-dimension log probs
+        train_loss_sum += -log_prob.mean(dim=0).detach().cpu()
+        num_train_batches += 1
+
         log_prob = log_prob.sum(dim=-1)           # [B]
-        # print(log_prob)
 
         # Maximize the negative log likelihood as the loss. LBC​=−E[logπθ​(a∣s)]​
         loss = -log_prob.mean()
@@ -66,7 +71,7 @@ def train_one_epoch(epoch_index, tb_writer):
         #     tb_writer.add_scalar('Loss/train', last_loss, tb_x)
         #     running_loss = 0.
 
-    return running_loss / len(train_loader), log_prob_per_dim
+    return running_loss / len(train_loader), train_loss_sum / num_train_batches
 
 # Load config
 cfg_path = "../reppo/config/algorithm/reppo.yaml"
@@ -110,12 +115,14 @@ train_losses_per_epoch = []
 val_losses_per_epoch = []
 
 for epoch in range(EPOCHS):
+    num_val_batches = 0
+    val_loss_sum = 0.0
     print('EPOCH {}:'.format(epoch_number + 1))
 
     # Make sure gradient tracking is on, and do a pass over the data
     actor.train()
     avg_loss, avg_loss_per_dim = train_one_epoch(epoch_number, writer)
-    train_losses_per_epoch.append(avg_loss_per_dim.mean(dim=0).detach().cpu())
+    train_losses_per_epoch.append(avg_loss_per_dim)
 
     running_vloss = 0.0
     # Set the model to evaluation mode, disabling gradient flow
@@ -131,11 +138,16 @@ for epoch in range(EPOCHS):
             dist, _, _, _ = actor(obs.to(device))
             expert_action = expert_action.to(device)
             log_prob = dist.log_prob(expert_action)
-            val_losses_per_epoch.append((-log_prob).mean(dim=0).detach().cpu())
+            # storing average per-dimension log probs
+            val_loss_sum += (-log_prob).mean(dim=0).detach().cpu()
+            num_val_batches += 1
+
             # print('Validation:', expert_action, log_prob)
             log_prob = log_prob.sum(dim=-1)
             vloss = -log_prob.mean()
             running_vloss += vloss.item()
+
+    val_losses_per_epoch.append(val_loss_sum / num_val_batches)
 
     avg_vloss = running_vloss / (i + 1)
     print('LOSS train {} valid {}'.format(avg_loss, avg_vloss))
@@ -150,9 +162,9 @@ for epoch in range(EPOCHS):
     # Track best performance, and save the model's state
     if avg_vloss < best_vloss:
         best_vloss = avg_vloss
-        if not os.path.exists('saved_models'):
-            os.makedirs('saved_models')
-        model_path = 'saved_models/bc_model_{}_{}'.format(timestamp, epoch_number)
+        if not os.path.exists('saved_models_v3'):
+            os.makedirs('saved_models_v3')
+        model_path = 'saved_models_v3/bc_model_{}_{}'.format(timestamp, epoch_number)
         torch.save(actor.state_dict(), model_path)
 
     epoch_number += 1
@@ -162,6 +174,8 @@ train_losses_per_epoch = torch.stack(train_losses_per_epoch)  # [num_epochs, act
 val_losses_per_epoch = torch.stack(val_losses_per_epoch)      # [num_epochs, action_dim]
 
 num_epochs, action_dim = train_losses_per_epoch.shape
+if not os.path.exists('saved_models_v3/loss_plots'):
+    os.mkdir('saved_models_v3/loss_plots')
 
 # Plot per-dimension trends
 for dim in range(action_dim):
@@ -174,7 +188,7 @@ for dim in range(action_dim):
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(f"saved_models/loss_plots/loss_dim_{dim}.png")
+    plt.savefig(f"saved_models_v3/loss_plots/loss_dim_{dim}.png")
     plt.close()
 
 print(f"Saved {action_dim} plots in ./loss_plots/")

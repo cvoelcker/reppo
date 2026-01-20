@@ -2,6 +2,7 @@ import h5py
 import json
 import numpy as np
 import torch
+import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Union
 from tensordict import TensorDict
