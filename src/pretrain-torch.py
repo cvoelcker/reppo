@@ -12,66 +12,121 @@ from torch.utils.tensorboard import SummaryWriter
 from omegaconf import OmegaConf
 from src.maniskill_utils.maniskill_dataloader_shabnam import load_demos_for_training
 
-def train_one_epoch(epoch_index, tb_writer):
+
+def denormalize_action(normalized_action, low, high):
+    """
+    Denormalize actions from [-1, 1] back to original action space [low, high].
+    """
+    denormalized = (normalized_action + 1.0) * (high - low) / 2.0 + low
+    return denormalized
+
+
+def train_one_epoch(epoch_index, tb_writer, low, high, actor):
     running_loss = 0.
     last_loss = 0.
     num_train_batches = 0
     train_loss_sum = 0.0
 
-    # Here, we use enumerate(train_loader) instead of iter(train_loader) so that we can track the batch index and do some intra-epoch reporting
+    # NEW: accumulate diagnostics
+    policy_std_sum = 0.0
+    mean_action_norm_sum = 0.0
+    tanh_mean_action_norm_sum = 0.0      # NEW: track post-tanh mean
+    action_l2_error_sum = 0.0          # NEW: BC sanity check
+    sampled_action_std_sum = 0.0       # NEW: post-tanh proxy
+    policy_std_pre_tanh_sum = 0.0
+    action_std_post_tanh_sum = 0.0
+    expert_action_std_sum = 0.0        # NEW: track expert action variance
+    denorm_expert_action_std_sum = 0.0 # NEW: track denormalized expert variance
+
     for i, data in enumerate(train_loader):
-        # print(data)
-        
         obs, expert_action = data['observations'], data['actions']
         expert_action, obs = expert_action.to(device), obs.to(device)
+        
+        # Track original expert action statistics BEFORE normalization
+        original_expert_action_std = expert_action.std(dim=0).mean().item()
+        denorm_expert_action_std_sum += original_expert_action_std
+
         # normalize and clamp the actions to stay between -1 and +1 excluding the boundary points
         expert_action = 2.0 * (expert_action - low) / (high - low + 1e-6) - 1.0
         expert_action = torch.clamp(expert_action, -0.95, 0.95)
-        # print(expert_action.shape, obs.shape)
+        
+        # Track normalized expert action std
+        normalized_expert_std = expert_action.std(dim=0).mean().item()
+        expert_action_std_sum += normalized_expert_std
 
         # Zero your gradients for every batch!
         optimizer.zero_grad()
 
-        # with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
+        # Returns a distribution of actions between the range (-1, 1)
+        dist, tanh_mean, _, _, log_std, mean = actor(obs)
 
-        # Returns a distribution of actions between the range (-1, 1). It transforms the bell-curve shape of the normal distribution into a different, S-shaped curve, making it more concentrated near zero and rapidly flattening towards -1 and 1
-        dist, _, _, _ = actor(obs)
+        # Diagnostics (pre-tanh)
+        mean_action_norm = mean.norm(dim=-1).mean() 
+        mean_action_norm_sum += mean_action_norm.item()
+        policy_std = (torch.exp(log_std) + actor.min_std).mean()
+        policy_std_pre_tanh_sum += policy_std.item() 
 
-        # Extract the log probability of the actions instead of raw probabilities (for more stability and better gradient flow especially while dealing with very small probailities)
-        # print(expert_action)
+        # Diagnostics (post-tanh)
+        with torch.no_grad():
+
+            # Track tanh-transformed mean (this should NOT be ~0) and std
+            tanh_mean_action_norm = tanh_mean.norm(dim=-1).mean()
+            tanh_mean_action_norm_sum += tanh_mean_action_norm.item()
+
+            sampled_action = dist.rsample()
+            sampled_action_std = sampled_action.std(dim=0).mean()
+            action_std_post_tanh_sum += sampled_action_std.item()
+
+            # BC sanity: are we fitting expert actions?
+            action_l2_error = (sampled_action - expert_action).norm(dim=-1).mean()
+            action_l2_error_sum += action_l2_error.item()
+
+        # tensorBoard logging
+        global_step = epoch_index * len(train_loader) + i
+        tb_writer.add_scalar("Diagnosics/denorm_expert_action_std_sum", original_expert_action_std, global_step)
+        tb_writer.add_scalar("Diagnosics/expert_action_std_sum", normalized_expert_std, global_step)
+        tb_writer.add_scalar("Diagnostics/mean_action_norm_pre_tanh", mean_action_norm.item(), global_step)
+        tb_writer.add_scalar("Diagnostics/policy_std_pre_tanh", policy_std.item(), global_step)
+        tb_writer.add_scalar("Diagnostics/mean_action_norm_post_tanh", tanh_mean_action_norm.item(), global_step)
+        tb_writer.add_scalar("Diagnostics/action_std_post_tanh", sampled_action_std.item(), global_step)
+        tb_writer.add_scalar("Diagnostics/action_l2_error", action_l2_error.item(), global_step)
+
+        # Extract log probability
         log_prob = dist.log_prob(expert_action)  # [B, action_dim]
+        log_prob_sum = log_prob.sum(dim=-1)  # [B]
 
-        # storing average per-dimension log probs
+        # Main loss: Maximum likelihood
+        mle_loss = -log_prob_sum.mean()
+
+        # Auxiliary Loss - Enforce policy mean matches expert action means across individual dimensions
+        # L2 loss between policy mean action and expert action
+        action_match_loss = (tanh_mean - expert_action).pow(2).mean()
+
+        # Combined loss: MLE + Action Matching + Std Regularization
+        std_reg_coef = 0.10  # regularization on log std to prevent variance collapse
+        action_match_coef = 0.50  # Weight of action matching to enforce per-dimension mean learning
+        loss = mle_loss + action_match_coef * action_match_loss - std_reg_coef * log_std.mean()
+
+        # storing average per-dimension log probs (BEFORE summing)
         train_loss_sum += -log_prob.mean(dim=0).detach().cpu()
         num_train_batches += 1
 
-        log_prob = log_prob.sum(dim=-1)           # [B]
-
-        # Maximize the negative log likelihood as the loss. LBC​=−E[logπθ​(a∣s)]​
-        loss = -log_prob.mean()
-        # print('Training:', expert_action, log_prob)
-
-        # Scale loss before backward()
-        # scaler.scale(loss).backward()
         loss.backward()
-
-        # Step the optimizer using the scaler
-        # scaler.step(optimizer)
         optimizer.step()
 
-        # Update the scaler's scale factor
-        # scaler.update()
-
-        # Gather data and report
         running_loss += loss.item()
-        # if i % 1000 == 999:
-        #     last_loss = running_loss / 1000 # loss per batch
-        #     print('  batch {} loss: {}'.format(i + 1, last_loss))
-        #     tb_x = epoch_index * len(training_loader) + i + 1
-        #     tb_writer.add_scalar('Loss/train', last_loss, tb_x)
-        #     running_loss = 0.
 
-    return running_loss / len(train_loader), train_loss_sum / num_train_batches
+    return (
+        running_loss / len(train_loader),
+        train_loss_sum / num_train_batches,
+        policy_std_pre_tanh_sum / num_train_batches,
+        mean_action_norm_sum / num_train_batches,
+        tanh_mean_action_norm_sum / num_train_batches,      # NEW: return post-tanh mean
+        action_std_post_tanh_sum / num_train_batches,
+        action_l2_error_sum / num_train_batches,
+        expert_action_std_sum / num_train_batches,
+        denorm_expert_action_std_sum / num_train_batches
+    )
 
 # Load config
 cfg_path = "../reppo/config/algorithm/reppo.yaml"
@@ -114,6 +169,18 @@ scaler = GradScaler()
 train_losses_per_epoch = []
 val_losses_per_epoch = []
 
+# Check dataset action stats
+all_actions = torch.cat(
+    [batch["actions"] for batch in train_loader],
+    dim=0
+)
+
+print("\n=== DATASET ACTION STATS ===")
+print("Action mean per dim:", all_actions.mean(dim=0))
+print("Action std  per dim:", all_actions.std(dim=0))
+print("Mean action L2 norm:", all_actions.norm(dim=-1).mean().item())
+print("================================\n")
+
 for epoch in range(EPOCHS):
     num_val_batches = 0
     val_loss_sum = 0.0
@@ -121,7 +188,7 @@ for epoch in range(EPOCHS):
 
     # Make sure gradient tracking is on, and do a pass over the data
     actor.train()
-    avg_loss, avg_loss_per_dim = train_one_epoch(epoch_number, writer)
+    avg_loss, avg_loss_per_dim, avg_policy_std, avg_mean_action_norm_pre, avg_mean_action_norm_post, avg_action_std_post_tanh_sum, avg_action_l2_error_sum, avg_expert_std, avg_denorm_expert_std = train_one_epoch(epoch_number, writer, low, high, actor)
     train_losses_per_epoch.append(avg_loss_per_dim)
 
     running_vloss = 0.0
@@ -135,7 +202,7 @@ for epoch in range(EPOCHS):
             # normalize and clamp the actions to stay between -1 and +1 excluding the boundary points
             expert_action = 2.0 * (expert_action - low) / (high - low + 1e-6) - 1.0
             expert_action = torch.clamp(expert_action, -0.95, 0.95)
-            dist, _, _, _ = actor(obs.to(device))
+            dist, _, _, _, _, _ = actor(obs.to(device))
             expert_action = expert_action.to(device)
             log_prob = dist.log_prob(expert_action)
             # storing average per-dimension log probs
@@ -162,20 +229,30 @@ for epoch in range(EPOCHS):
     # Track best performance, and save the model's state
     if avg_vloss < best_vloss:
         best_vloss = avg_vloss
-        if not os.path.exists('saved_models_v3'):
-            os.makedirs('saved_models_v3')
-        model_path = 'saved_models_v3/bc_model_{}_{}'.format(timestamp, epoch_number)
+        if not os.path.exists('saved_models_state_noise'):
+            os.makedirs('saved_models_state_noise')
+        model_path = 'saved_models_state_noise/bc_model_{}_{}'.format(timestamp, epoch_number)
         torch.save(actor.state_dict(), model_path)
 
     epoch_number += 1
+
+    print(
+        f"[Diagnostics] Epoch {epoch_number:03d} | "
+        f"policy_std_pre_tanh={avg_policy_std:.4f} | "
+        f"mean_pre_tanh={avg_mean_action_norm_pre:.4f} | "
+        f"mean_post_tanh={avg_mean_action_norm_post:.4f} | "
+        f"action_std_post_tanh={avg_action_std_post_tanh_sum:.4f} | "
+        f"action_l2_error={avg_action_l2_error_sum:.4f} | "
+        f"expert_std={avg_expert_std:.4f}"
+    )
 
 # save the per-dimension loss plots
 train_losses_per_epoch = torch.stack(train_losses_per_epoch)  # [num_epochs, action_dim]
 val_losses_per_epoch = torch.stack(val_losses_per_epoch)      # [num_epochs, action_dim]
 
 num_epochs, action_dim = train_losses_per_epoch.shape
-if not os.path.exists('saved_models_v3/loss_plots'):
-    os.mkdir('saved_models_v3/loss_plots')
+if not os.path.exists('saved_models_state_noise/loss_plots'):
+    os.mkdir('saved_models_state_noise/loss_plots')
 
 # Plot per-dimension trends
 for dim in range(action_dim):
@@ -188,7 +265,7 @@ for dim in range(action_dim):
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(f"saved_models_v3/loss_plots/loss_dim_{dim}.png")
+    plt.savefig(f"saved_models_state_noise/loss_plots/loss_dim_{dim}.png")
     plt.close()
 
 print(f"Saved {action_dim} plots in ./loss_plots/")
