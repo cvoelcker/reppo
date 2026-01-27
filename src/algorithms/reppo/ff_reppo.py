@@ -2,6 +2,7 @@ import logging
 import math
 from typing import Callable
 import operator
+import os
 
 import hydra
 import jax
@@ -21,8 +22,125 @@ from src.common import (
 from src.normalization import Normalizer
 from src.algorithms import utils
 import distrax
+import torch
 
 logging.basicConfig(level=logging.INFO)
+
+
+def load_bc_weights_to_actor(bc_checkpoint_path: str, jax_actor: nnx.Module) -> nnx.Module:
+    """
+    Load PyTorch BC weights into JAX actor's feature_encoder.
+    
+    Maps PyTorch FCNN weights to JAX MLP structure by traversing the module tree.
+    
+    Args:
+        bc_checkpoint_path: Path to BC checkpoint file (.pth or .pt)
+        jax_actor: JAX actor with feature_encoder to load weights into
+    
+    Returns:
+        Modified jax_actor with BC feature_encoder weights loaded
+    """
+    import glob
+    
+    # Verify checkpoint exists
+    if not os.path.exists(bc_checkpoint_path):
+        logging.warning(f"Checkpoint not found at {bc_checkpoint_path}, using random initialization")
+        return jax_actor
+    
+    logging.info(f"Loading BC weights from {bc_checkpoint_path}")
+    
+    try:
+        checkpoint = torch.load(bc_checkpoint_path, map_location="cpu")
+        
+        # Extract state dict
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+        elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+        elif hasattr(checkpoint, "state_dict"):
+            state_dict = checkpoint.state_dict()
+        else:
+            state_dict = checkpoint
+        
+        logging.info(f"Loaded checkpoint with {len(state_dict)} parameters")
+        
+        # Extract linear layer names from torch state dict
+        torch_linear_layers = []
+        for name in sorted(state_dict.keys()):
+            if "model.net" in name and ".0.weight" in name:  # .0 is Linear in normed_activation_layer
+                torch_linear_layers.append(name)
+        
+        logging.info(f"Found {len(torch_linear_layers)} linear layers in torch model")
+        
+        # Get JAX actor's feature_encoder structure
+        fe = jax_actor.feature_encoder
+        
+        # Collect JAX linear layers (from input_layer, main_layers, output_layer)
+        jax_linear_refs = []
+        
+        # input_layer: Sequential with [Linear, LayerNorm(?), Activation]
+        if hasattr(fe, 'input_layer'):
+            layers = getattr(fe.input_layer, 'layers', None)
+            if layers is not None:
+                for module in layers:
+                    if isinstance(module, nnx.Linear):
+                        jax_linear_refs.append(module)
+        
+        # main_layers: nnx.List of Sequentials
+        if hasattr(fe, 'main_layers'):
+            for seq in fe.main_layers:
+                layers = getattr(seq, 'layers', None)
+                if layers is not None:
+                    for module in layers:
+                        if isinstance(module, nnx.Linear):
+                            jax_linear_refs.append(module)
+        
+        # output_layer: Sequential with [Linear, LayerNorm(?), Activation]
+        if hasattr(fe, 'output_layer'):
+            layers = getattr(fe.output_layer, 'layers', None)
+            if layers is not None:
+                for module in layers:
+                    if isinstance(module, nnx.Linear):
+                        jax_linear_refs.append(module)
+        
+        logging.info(f"Found {len(jax_linear_refs)} nnx.Linear module references")
+        
+        # Transfer weights from torch to jax
+        transferred = 0
+        for torch_name, jax_layer in zip(torch_linear_layers, jax_linear_refs):
+            try:
+                # Get torch weights and bias
+                torch_weight = state_dict[torch_name]  # [out_features, in_features]
+                torch_bias_name = torch_name.replace(".weight", ".bias")
+                torch_bias = state_dict.get(torch_bias_name, None)
+                
+                # Transfer weights (transpose: torch [out, in] -> jax [in, out])
+                jax_layer.kernel = jnp.array(torch_weight.detach().cpu().numpy().T)
+                
+                # Transfer bias
+                if torch_bias is not None:
+                    jax_layer.bias = jnp.array(torch_bias.detach().cpu().numpy())
+                
+                transferred += 1
+                logging.debug(f"Transferred {torch_name}")
+                
+            except Exception as e:
+                logging.warning(f"Failed to transfer {torch_name}: {e}")
+                continue
+        
+        logging.info(f"Successfully transferred {transferred}/{len(torch_linear_layers)} weight matrices")
+        
+        if transferred == 0:
+            logging.warning("No weights were transferred! Verify architecture compatibility.")
+        
+        return jax_actor
+        
+    except Exception as e:
+        logging.error(f"Failed to load BC weights: {e}")
+        logging.warning("Using random initialization instead")
+        import traceback
+        traceback.print_exc()
+        return jax_actor
 
 
 class REPPOPolicy(nnx.Module):
@@ -128,6 +246,17 @@ def make_init_fn(
             observation_space=observation_space,
             rngs=rngs,
         )
+
+        # Print JAX actor structure
+        logging.info("JAX Actor structure successfully created")
+
+        # Load BC pretrained weights into actor's feature_encoder
+        bc_checkpoint_path = getattr(hparams, "bc_checkpoint_path", None)
+        if bc_checkpoint_path and os.path.exists(bc_checkpoint_path):
+            logging.info(f"Loading BC weights from {bc_checkpoint_path}")
+            actor = load_bc_weights_to_actor(bc_checkpoint_path, actor)
+        else:
+            logging.info("No BC checkpoint specified or found, using random initialization")
 
         return REPPOTrainState.create(
             graphdef=nnx.graphdef(actor),

@@ -15,7 +15,7 @@ from src.common import (
 )
 from src.algorithms import utils
 import jax.numpy as jnp
-from src.maniskill_utils.maniskill_env import OfflineDatasetEnv
+# from src.maniskill_utils.maniskill_env import OfflineDatasetEnv
 
 from src.env_utils.torch_wrappers.maniskill_wrapper import to_jax
 

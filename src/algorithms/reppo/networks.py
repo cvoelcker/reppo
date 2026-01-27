@@ -75,6 +75,8 @@ class Actor(nnx.Module):
                 "State must be provided for actor."
             )
             obs = obs["state"]
+        
+        # Observations should already be filtered to 25 dims by the environment wrapper
         features = self.feature_encoder(obs)
         return self.policy_head(features, scale=scale, deterministic=False)
 
@@ -84,6 +86,8 @@ class Actor(nnx.Module):
                 "State must be provided for actor."
             )
             obs = obs["state"]
+        
+        # Observations should already be filtered to 25 dims by the environment wrapper
         features = self.feature_encoder(obs)
         return self.policy_head(features, deterministic=True)
 
@@ -104,14 +108,14 @@ def make_continuous_actor(
 ) -> Actor:
     hparams = cfg.algorithm
     if cfg.env.get("asymmetric_observation", False):
-        actor_observation_space = observation_space.spaces["state"]
+        actor_observation_space = 25 # 25 for bc and - observation_space.spaces["state"] for non-bc
     else:
-        actor_observation_space = observation_space
+        actor_observation_space = 25 # 25 for bc and - observation_space for non-bc observation_space
     if encoder is not None:
         actor_encoder = encoder
     else:
         actor_encoder = MLP(
-            in_features=actor_observation_space.shape[0],
+            in_features=actor_observation_space, # actor_observation_space.shape[0], for non-bc
             out_features=action_space.shape[0] * 2,
             hidden_dim=hparams.actor_hidden_dim,
             hidden_activation=nnx.swish,

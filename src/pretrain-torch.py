@@ -21,31 +21,29 @@ def denormalize_action(normalized_action, low, high):
     return denormalized
 
 def train_one_epoch(epoch_index, tb_writer, low, high, actor):
-    running_loss = 0.
-    last_loss = 0.
-    num_train_batches = 0
-    train_loss_sum = 0.0
+    """Train one epoch and return actor loss plus diagnostic metrics."""
+    actor_loss_sum = 0.0
+    num_batches = 0
 
-    # NEW: accumulate diagnostics
+    # Accumulate diagnostics
     policy_std_sum = 0.0
     mean_action_norm_sum = 0.0
-    tanh_mean_action_norm_sum = 0.0      # NEW: track post-tanh mean
-    action_l2_error_sum = 0.0          # NEW: BC sanity check
-    sampled_action_std_sum = 0.0       # NEW: post-tanh proxy
-    policy_std_pre_tanh_sum = 0.0
+    tanh_mean_action_norm_sum = 0.0
+    action_l2_error_sum = 0.0
     action_std_post_tanh_sum = 0.0
-    expert_action_std_sum = 0.0        # NEW: track expert action variance
-    denorm_expert_action_std_sum = 0.0 # NEW: track denormalized expert variance
+    expert_action_std_sum = 0.0
+    denorm_expert_action_std_sum = 0.0
 
     for i, data in enumerate(train_loader):
         obs, expert_action = data['observations'], data['actions']
         expert_action, obs = expert_action.to(device), obs.to(device)
+        num_batches += 1
         
         # Track original expert action statistics BEFORE normalization
         original_expert_action_std = expert_action.std(dim=0).mean().item()
         denorm_expert_action_std_sum += original_expert_action_std
 
-        # normalize and clamp the actions to stay between -1 and +1 excluding the boundary points
+        # Normalize actions to [-1, 1]
         expert_action = 2.0 * (expert_action - low) / (high - low) - 1.0
         expert_action = torch.clamp(expert_action, -0.95, 0.95)
         
@@ -53,22 +51,20 @@ def train_one_epoch(epoch_index, tb_writer, low, high, actor):
         normalized_expert_std = expert_action.std(dim=0).mean().item()
         expert_action_std_sum += normalized_expert_std
 
-        # Zero your gradients for every batch!
+        # Zero gradients
         optimizer.zero_grad()
 
-        # Returns a distribution of actions between the range (-1, 1)
+        # ===== ACTOR LOSS =====
         dist, tanh_mean, _, _, log_std, mean = actor(obs)
 
         # Diagnostics (pre-tanh)
         mean_action_norm = mean.norm(dim=-1).mean() 
         mean_action_norm_sum += mean_action_norm.item()
         policy_std = (torch.exp(log_std) + actor.min_std).mean()
-        policy_std_pre_tanh_sum += policy_std.item() 
+        policy_std_sum += policy_std.item() 
 
         # Diagnostics (post-tanh)
         with torch.no_grad():
-
-            # Track tanh-transformed mean (this should NOT be ~0) and std
             tanh_mean_action_norm = tanh_mean.norm(dim=-1).mean()
             tanh_mean_action_norm_sum += tanh_mean_action_norm.item()
 
@@ -80,61 +76,54 @@ def train_one_epoch(epoch_index, tb_writer, low, high, actor):
             action_l2_error = (sampled_action - expert_action).norm(dim=-1).mean()
             action_l2_error_sum += action_l2_error.item()
 
-        # tensorBoard logging
+        # TensorBoard logging (per-batch diagnostics)
         global_step = epoch_index * len(train_loader) + i
-        tb_writer.add_scalar("Diagnostics/denorm_expert_action_std_sum", original_expert_action_std, global_step)
-        tb_writer.add_scalar("Diagnostics/expert_action_std_sum", normalized_expert_std, global_step)
+        tb_writer.add_scalar("Diagnostics/denorm_expert_action_std", original_expert_action_std, global_step)
+        tb_writer.add_scalar("Diagnostics/expert_action_std", normalized_expert_std, global_step)
         tb_writer.add_scalar("Diagnostics/mean_action_norm_pre_tanh", mean_action_norm.item(), global_step)
         tb_writer.add_scalar("Diagnostics/policy_std_pre_tanh", policy_std.item(), global_step)
         tb_writer.add_scalar("Diagnostics/mean_action_norm_post_tanh", tanh_mean_action_norm.item(), global_step)
         tb_writer.add_scalar("Diagnostics/action_std_post_tanh", sampled_action_std.item(), global_step)
         tb_writer.add_scalar("Diagnostics/action_l2_error", action_l2_error.item(), global_step)
 
-        # Extract log probability
+        # Compute loss
         log_prob = dist.log_prob(expert_action)  # [B, action_dim]
         
-        # Get learnable dimension weights (softplus ensures positive values)
-        # dim_weights = torch.nn.functional.softplus(actor.dim_weights)  # [action_dim]
+        # NLL: Maximum likelihood estimation
+        nll_loss = -log_prob.sum(dim=-1).mean()
         
-        # Apply dimension weights to log_prob: high weight on important dims
-        # weighted_log_prob = log_prob * dim_weights.unsqueeze(0)  # [B, action_dim]
-        # weighted_log_prob_sum = weighted_log_prob.sum(dim=-1)  # [B]
+        # MSE: Explicit mean matching
+        mse_loss = (tanh_mean - expert_action).pow(2).mean()
         
-        # Main loss: Weighted Maximum Likelihood Estimation
-        # NLL learns the full distribution (mean + variance/covariance structure)
-        # mle_loss = -weighted_log_prob_sum.mean()
-        mle_loss = -log_prob.sum(dim=-1).mean()
+        # Combined actor loss
+        actor_loss = nll_loss + mse_loss
 
-        # MSE provides explicit mean matching constraint
-        per_dim_mse = (tanh_mean - expert_action).pow(2)  # [B, action_dim]
-        # weighted_mse = (per_dim_mse * dim_weights.unsqueeze(0)).mean()
-
-        # Combined loss: Weighted NLL + Weighted Mean MSE + Std Regularization (For now optional)
-        # - NLL: learns full distribution (mean + variance structure)
-        # - MSE: explicit mean matching constraint  
-        mean_mse_coef = 1.0       # Weight on mean matching
-        # loss = mle_loss + mean_mse_coef * weighted_mse
-        loss = mle_loss + mean_mse_coef * per_dim_mse.mean()
-
-        # storing average per-dimension log probs
-        train_loss_sum += -log_prob.mean(dim=0).detach().cpu()
-        num_train_batches += 1
-
-        loss.backward()
+        # Backward pass and optimization
+        actor_loss.backward()
         optimizer.step()
 
-        running_loss += loss.item()
+        # Accumulate loss
+        actor_loss_sum += actor_loss.item()
 
+    # Compute averages
+    avg_actor_loss = actor_loss_sum / num_batches
+    avg_policy_std = policy_std_sum / num_batches
+    avg_mean_action_norm_pre = mean_action_norm_sum / num_batches
+    avg_mean_action_norm_post = tanh_mean_action_norm_sum / num_batches
+    avg_action_std_post_tanh = action_std_post_tanh_sum / num_batches
+    avg_action_l2_error = action_l2_error_sum / num_batches
+    avg_expert_std = expert_action_std_sum / num_batches
+    avg_denorm_expert_std = denorm_expert_action_std_sum / num_batches
+    
     return (
-        running_loss / len(train_loader),
-        train_loss_sum / num_train_batches,
-        policy_std_pre_tanh_sum / num_train_batches,
-        mean_action_norm_sum / num_train_batches,
-        tanh_mean_action_norm_sum / num_train_batches,      # NEW: return post-tanh mean
-        action_std_post_tanh_sum / num_train_batches,
-        action_l2_error_sum / num_train_batches,
-        expert_action_std_sum / num_train_batches,
-        denorm_expert_action_std_sum / num_train_batches
+        avg_actor_loss,
+        avg_policy_std,
+        avg_mean_action_norm_pre,
+        avg_mean_action_norm_post,
+        avg_action_std_post_tanh,
+        avg_action_l2_error,
+        avg_expert_std,
+        avg_denorm_expert_std
     )
 
 # Load config
@@ -176,8 +165,8 @@ optimizer = optim.AdamW(
         lr=float(cfg.optimizer.learning_rate)
     )
 scaler = GradScaler()
-train_losses_per_epoch = []
-val_losses_per_epoch = []
+train_losses = []
+val_losses = []
 
 # Check dataset action stats
 all_actions = torch.cat(
@@ -192,100 +181,94 @@ print("Mean action L2 norm:", all_actions.norm(dim=-1).mean().item())
 print("================================\n")
 
 for epoch in range(EPOCHS):
-    num_val_batches = 0
-    val_loss_sum = 0.0
-    print('EPOCH {}:'.format(epoch_number + 1))
+    print(f'\nEPOCH {epoch_number + 1}/{EPOCHS}')
 
-    # Make sure gradient tracking is on, and do a pass over the data
+    # ===== TRAINING PHASE =====
     actor.train()
-    avg_loss, avg_loss_per_dim, avg_policy_std, avg_mean_action_norm_pre, avg_mean_action_norm_post, avg_action_std_post_tanh_sum, avg_action_l2_error_sum, avg_expert_std, avg_denorm_expert_std = train_one_epoch(epoch_number, writer, low, high, actor)
-    train_losses_per_epoch.append(avg_loss_per_dim)
+    avg_actor_loss, avg_policy_std, avg_mean_action_norm_pre, avg_mean_action_norm_post, avg_action_std_post_tanh, avg_action_l2_error, avg_expert_std, avg_denorm_expert_std = train_one_epoch(epoch_number, writer, low, high, actor)
+    train_losses.append(avg_actor_loss)
 
-    running_vloss = 0.0
-    # Set the model to evaluation mode, disabling gradient flow
+    # ===== VALIDATION PHASE =====
     actor.eval()
+    val_loss_sum = 0.0
+    val_num_batches = 0
 
-    # Disable gradient computation and reduce memory consumption.
     with torch.no_grad():
         for i, vdata in enumerate(val_loader):
             obs, expert_action = vdata['observations'], vdata['actions']
-            # normalize and clamp the actions to stay between -1 and +1 excluding the boundary points
+            # Normalize actions to [-1, 1]
             expert_action = 2.0 * (expert_action - low) / (high - low + 1e-6) - 1.0
             expert_action = torch.clamp(expert_action, -0.95, 0.95)
-            dist, tanh_mean, _, _, log_std, _ = actor(obs.to(device))
+            obs = obs.to(device)
             expert_action = expert_action.to(device)
+            val_num_batches += 1
             
-            # Compute validation loss using SAME formula as training
-            log_prob = dist.log_prob(expert_action)  # [B, action_dim]
+            # ===== ACTOR LOSS =====
+            dist, tanh_mean, _, _, _, _ = actor(obs)
+            log_prob = dist.log_prob(expert_action)
             
-            # Main loss: NLL
-            mle_loss = -log_prob.sum(dim=-1).mean()
+            # NLL: Maximum likelihood estimation
+            nll_loss = -log_prob.sum(dim=-1).mean()
             
-            # Auxiliary Loss - MSE on mean
-            per_dim_mse = (tanh_mean - expert_action).pow(2)  # [B, action_dim]
-            mse_loss = per_dim_mse.mean()
+            # MSE: Explicit mean matching
+            mse_loss = (tanh_mean - expert_action).pow(2).mean()
             
-            # Combined validation loss (same formula as training)
-            mean_mse_coef = 1.0
-            vloss = mle_loss + mean_mse_coef * mse_loss
-            
-            # storing average per-dimension log probs
-            val_loss_sum += (-log_prob).mean(dim=0).detach().cpu()
-            num_val_batches += 1
-            running_vloss += vloss.item()
+            # Combined validation loss
+            val_loss = nll_loss + mse_loss
+            val_loss_sum += val_loss.item()
 
-    val_losses_per_epoch.append(val_loss_sum / num_val_batches)
+    avg_val_loss = val_loss_sum / val_num_batches
+    val_losses.append(avg_val_loss)
 
-    avg_vloss = running_vloss / (i + 1)
-    print('LOSS train {} valid {}'.format(avg_loss, avg_vloss))
+    # Print epoch results
+    print(f'  Loss: train={avg_actor_loss:.4f} | val={avg_val_loss:.4f}')
 
-    # Log the running loss averaged per batch
-    # for both training and validation
-    writer.add_scalars('Training vs. Validation Loss',
-                    { 'Training' : avg_loss, 'Validation' : avg_vloss },
-                    epoch_number + 1)
+    # TensorBoard logging
+    writer.add_scalars('Actor Loss', {'train': avg_actor_loss, 'val': avg_val_loss}, epoch_number + 1)
     writer.flush()
 
-    # Track best performance, and save the model's state
-    if avg_vloss < best_vloss:
-        best_vloss = avg_vloss
+    # Save best actor based on validation loss
+    if avg_val_loss < best_vloss:
+        best_vloss = avg_val_loss
         if not os.path.exists('bc_utils'):
             os.makedirs('bc_utils')
-        model_path = 'bc_utils/bc_model_{}_{}'.format(timestamp, epoch_number)
+        model_path = f'bc_utils/bc_model_{timestamp}_{epoch_number}'
         torch.save(actor.state_dict(), model_path)
+        print(f'  ✓ Saved best model')
 
     epoch_number += 1
 
+    # Print diagnostics
     print(
-        f"[Diagnostics] Epoch {epoch_number:03d} | "
-        f"policy_std_pre_tanh={avg_policy_std:.4f} | "
+        f"  [Diagnostics] "
+        f"policy_std={avg_policy_std:.4f} | "
         f"mean_pre_tanh={avg_mean_action_norm_pre:.4f} | "
         f"mean_post_tanh={avg_mean_action_norm_post:.4f} | "
-        f"action_std_post_tanh={avg_action_std_post_tanh_sum:.4f} | "
-        f"action_l2_error={avg_action_l2_error_sum:.4f} | "
+        f"action_std_post_tanh={avg_action_std_post_tanh:.4f} | "
+        f"action_l2_error={avg_action_l2_error:.4f} | "
         f"expert_std={avg_expert_std:.4f}"
     )
 
-# save the per-dimension loss plots
-train_losses_per_epoch = torch.stack(train_losses_per_epoch)  # [num_epochs, action_dim]
-val_losses_per_epoch = torch.stack(val_losses_per_epoch)      # [num_epochs, action_dim]
+# ===== TRAINING COMPLETE =====
+print(f"\n{'='*60}")
+print(f"Training Complete! Best validation loss: {best_vloss:.4f}")
+print(f"{'='*60}")
 
-num_epochs, action_dim = train_losses_per_epoch.shape
+# Save final loss plots
 if not os.path.exists('bc_utils/loss_plots'):
-    os.mkdir('bc_utils/loss_plots')
+    os.makedirs('bc_utils/loss_plots')
 
-# Plot per-dimension trends
-for dim in range(action_dim):
-    plt.figure(figsize=(10, 5))
-    plt.plot(range(1, num_epochs + 1), train_losses_per_epoch[:, dim], label="Train Loss", color="blue")
-    plt.plot(range(1, num_epochs + 1), val_losses_per_epoch[:, dim], label="Validation Loss", color="red")
-    plt.xlabel("Epoch")
-    plt.ylabel(f"Mean NLL Loss (Action Dim {dim})")
-    plt.title(f"Action Dimension {dim} Loss Trend")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(f"bc_utils/loss_plots/loss_dim_{dim}.png")
-    plt.close()
+# Plot actor losses
+plt.figure(figsize=(10, 5))
+plt.plot(train_losses, label="Train Loss", color="blue")
+plt.plot(val_losses, label="Val Loss", color="red")
+plt.xlabel("Epoch")
+plt.ylabel("Actor Loss")
+plt.title("Actor Loss Over Epochs")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.savefig("bc_utils/loss_plots/actor_loss.png")
+plt.close()
 
-print(f"Saved {action_dim} plots in ./loss_plots/")
+print(f"Saved loss plots to bc_utils/loss_plots/")

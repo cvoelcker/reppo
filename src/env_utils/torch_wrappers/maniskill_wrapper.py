@@ -48,6 +48,25 @@ class ManiSkillWrapper(Wrapper):
         self.returns = jnp.zeros(env.num_envs, dtype=np.float32)
         self.episode_len = jnp.zeros(env.num_envs, dtype=np.float32)
         self.success = jnp.zeros(env.num_envs, dtype=np.float32)
+        
+        # Cache the overridden observation spaces to force them to be used
+        from gymnasium import spaces
+        try:
+            num_envs = env.num_envs
+        except AttributeError:
+            num_envs = 1
+        self._observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(num_envs, 25),
+            dtype=np.float32
+        )
+        self._single_observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(25,),
+            dtype=np.float32
+        )
 
     @property
     def action_space(self):
@@ -60,15 +79,35 @@ class ManiSkillWrapper(Wrapper):
     def observation_space(self):
         """
         Returns the observation space of the environment.
+        After filtering, observations are 25-dimensional.
         """
-        return self.env.observation_space
+        from gymnasium import spaces
+        # Return a 25-dim Box space (num_envs, 25)
+        try:
+            num_envs = self.env.num_envs
+        except AttributeError:
+            num_envs = 1
+        return spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(num_envs, 25),
+            dtype=np.float32
+        )
 
     @property
     def single_observation_space(self):
         """
         Returns the observation space of a single environment.
+        After filtering, observations are 25-dimensional.
         """
-        return self.env.single_observation_space
+        from gymnasium import spaces
+        # Return a 25-dim Box space
+        return spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(25,),
+            dtype=np.float32
+        )
 
     @property
     def single_action_space(self):

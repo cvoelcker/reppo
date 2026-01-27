@@ -1,5 +1,5 @@
 type: maniskill
-name: PickCube-v1
+name: PushCube-v1
 reconfiguration_freq: null
 eval_reconfiguration_freq: 1
 partial_reset: true
@@ -8,11 +8,11 @@ asymmetric_obs: false
 max_episode_steps: 50
 stochastic_eval: true
 has_final_obs: true
-control_mode: pd_joint_delta_pos
+control_mode: pd_joint_pos
 capture_video: false
 save_train_video_freq: null
 env_kwargs:
-  obs_mode: state
+  obs_mode: state_dict
   render_mode: rgb_array
   sim_backend: physx_cuda
 

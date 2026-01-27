@@ -158,6 +158,7 @@ class ManiSkillDemoLoader:
         for key in sorted(obs_group.keys()):  # iterates over available actors
             sub_group = obs_group[key]
             if key in ('agent', 'extra'):
+                # print(key, sub_group.keys())
                 for sub_key in sorted(sub_group.keys()):
                     data = np.array(sub_group[sub_key])
                     data_flat = data.reshape(data.shape[0], -1)
@@ -220,6 +221,7 @@ def load_demos_for_training(env_id: str,
     # train_dataset, val_dataset = random_split(dataset, [train_len, val_len])
 
     # create dataset from non flattened trajectories
+    # print(trajectories[0])
     num_traj = len(trajectories)
     train_traj = int(0.8 * num_traj)
     train_td = torch.cat(trajectories[:train_traj], dim=0)
@@ -245,7 +247,7 @@ def load_demos_for_training(env_id: str,
     print(f"Created {len(train_loader)} and {len(val_loader)} dataset from {demo_path}")
     return train_loader, val_loader, obs_dim, act_dim, act_min, act_max
 
-# result = load_demos_for_training("PushCube-v1", device=torch.device("cpu"), filter_success=True)
+result = load_demos_for_training("PushCube-v1", device=torch.device("cpu"), filter_success=True)
 
 # Create video from dataset observations (render pre-recorded RGB or state images)
 def render_trajectory_video(demo_path = '/scratch/cluster/idutta/h5_files/trajectory.rgb.pd_joint_pos.physx_cpu.h5', env_id = 'PushCube-v1', output_path = '/scratch/cluster/idutta/expert_videos', fps: int = 30):

@@ -187,6 +187,12 @@ def _make_maniskill_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
 
     env = make_env(eval=False)
     eval_env = make_env(eval=True)
+    
+    # Debug: check observation space from wrapper
+    import logging
+    logging.info(f"[make_maniskill_env] env.single_observation_space: {env.single_observation_space}")
+    logging.info(f"[make_maniskill_env] env.single_observation_space.shape: {env.single_observation_space.shape}")
+    
     return EnvSetup(
         env=env,
         eval_env=eval_env,
