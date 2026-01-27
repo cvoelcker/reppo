@@ -98,7 +98,7 @@ def flatten_obs(obs_dict):
                     obs_list.append(obs_dict[key][subkey].reshape(obs_dict[key][subkey].shape[0], -1))
     return np.concatenate(obs_list, axis=1)
 
-def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yaml",  model_path = "../reppo/saved_models_state_noise_v2/bc_model_20260125_202455_141"):
+def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yaml",  model_path = "../reppo/bc_utils/bc_model_20260125_202455_141"):
     # Load config
     cfg = OmegaConf.load(cfg_path)
 
@@ -179,7 +179,7 @@ def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yam
     # define configs
     num_episodes=300
     max_steps=1000
-    parent_dir = "./eval_videos_state_noise_v4_large"
+    parent_dir = "./bc_utils/eval_videos_state_noise_v4_large"
     if not os.path.exists(parent_dir):
         os.mkdir(parent_dir)
     save_dir = os.path.join(parent_dir, env_id.split('-')[0])

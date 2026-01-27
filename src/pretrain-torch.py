@@ -249,9 +249,9 @@ for epoch in range(EPOCHS):
     # Track best performance, and save the model's state
     if avg_vloss < best_vloss:
         best_vloss = avg_vloss
-        if not os.path.exists('saved_models_state_noise_v2'):
-            os.makedirs('saved_models_state_noise_v2')
-        model_path = 'saved_models_state_noise_v2/bc_model_{}_{}'.format(timestamp, epoch_number)
+        if not os.path.exists('bc_utils'):
+            os.makedirs('bc_utils')
+        model_path = 'bc_utils/bc_model_{}_{}'.format(timestamp, epoch_number)
         torch.save(actor.state_dict(), model_path)
 
     epoch_number += 1
@@ -271,8 +271,8 @@ train_losses_per_epoch = torch.stack(train_losses_per_epoch)  # [num_epochs, act
 val_losses_per_epoch = torch.stack(val_losses_per_epoch)      # [num_epochs, action_dim]
 
 num_epochs, action_dim = train_losses_per_epoch.shape
-if not os.path.exists('saved_models_state_noise_v2/loss_plots'):
-    os.mkdir('saved_models_state_noise_v2/loss_plots')
+if not os.path.exists('bc_utils/loss_plots'):
+    os.mkdir('bc_utils/loss_plots')
 
 # Plot per-dimension trends
 for dim in range(action_dim):
@@ -285,7 +285,7 @@ for dim in range(action_dim):
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(f"saved_models_state_noise_v2/loss_plots/loss_dim_{dim}.png")
+    plt.savefig(f"bc_utils/loss_plots/loss_dim_{dim}.png")
     plt.close()
 
 print(f"Saved {action_dim} plots in ./loss_plots/")
