@@ -94,9 +94,12 @@ def train_one_epoch(epoch_index, tb_writer, low, high, actor):
         
         # MSE: Explicit mean matching
         mse_loss = (tanh_mean - expert_action).pow(2).mean()
+
+        # std_reg_coef = 0.10  # regularization on log std to prevent variance collapse
+        action_match_coef = 1 # Weight of action matching to enforce per-dimension mean learning
         
         # Combined actor loss
-        actor_loss = nll_loss + mse_loss
+        actor_loss = nll_loss + action_match_coef * mse_loss  # - std_reg_coef * log_std.mean()
 
         # Backward pass and optimization
         actor_loss.backward()
@@ -204,7 +207,7 @@ for epoch in range(EPOCHS):
             val_num_batches += 1
             
             # ===== ACTOR LOSS =====
-            dist, tanh_mean, _, _, _, _ = actor(obs)
+            dist, tanh_mean, _, _, log_std, _ = actor(obs)
             log_prob = dist.log_prob(expert_action)
             
             # NLL: Maximum likelihood estimation
@@ -212,9 +215,12 @@ for epoch in range(EPOCHS):
             
             # MSE: Explicit mean matching
             mse_loss = (tanh_mean - expert_action).pow(2).mean()
+
+            # std_reg_coef = 0.10  # regularization on log std to prevent variance collapse
+            action_match_coef = 1 # Weight of action matching to enforce per-dimension mean learning
             
-            # Combined validation loss
-            val_loss = nll_loss + mse_loss
+            # Combined actor loss
+            val_loss = nll_loss + action_match_coef * mse_loss  # - std_reg_coef * log_std.mean()
             val_loss_sum += val_loss.item()
 
     avg_val_loss = val_loss_sum / val_num_batches
@@ -227,14 +233,14 @@ for epoch in range(EPOCHS):
     writer.add_scalars('Actor Loss', {'train': avg_actor_loss, 'val': avg_val_loss}, epoch_number + 1)
     writer.flush()
 
-    # Save best actor based on validation loss
+    # Save best actor based on validation actor loss
     if avg_val_loss < best_vloss:
         best_vloss = avg_val_loss
-        if not os.path.exists('bc_utils'):
-            os.makedirs('bc_utils')
-        model_path = f'bc_utils/bc_model_{timestamp}_{epoch_number}'
+        if not os.path.exists('../saved_models_state_noise_v3'):
+            os.makedirs('../saved_models_state_noise_v3')
+        model_path = f'../saved_models_state_noise_v3/bc_model_actor_{timestamp}_{epoch_number}'
         torch.save(actor.state_dict(), model_path)
-        print(f'  ✓ Saved best model')
+        print(f'  ✓ Saved best actor model')
 
     epoch_number += 1
 

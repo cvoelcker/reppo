@@ -91,7 +91,6 @@ def flatten_obs(obs_dict):
     # flatten the observation dictionary into a single array.
     obs_list = []
     for key in sorted(obs_dict.keys()):
-        print(key, obs_dict[key])
         if key in ['agent', 'extra']:
             subkeys = obs_dict[key].keys()
             for subkey in subkeys:
@@ -99,7 +98,7 @@ def flatten_obs(obs_dict):
                     obs_list.append(obs_dict[key][subkey].reshape(obs_dict[key][subkey].shape[0], -1))
     return np.concatenate(obs_list, axis=1)
 
-def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yaml",  model_path = "../reppo/bc_utils/bc_model_20260125_202455_141.pth"):
+def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yaml",  model_path = "../reppo/bc_utils/bc_model_actor_20260127_195206_180.pth"):
     # Load config
     cfg = OmegaConf.load(cfg_path)
 

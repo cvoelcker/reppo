@@ -34,7 +34,8 @@ def train_one_epoch(epoch_index, tb_writer, low, high, actor, critic):
         num_batches += 1
 
         # Normalize actions to [-1, 1]
-        expert_action = 2.0 * (expert_action - low) / (high - low) - 1.0
+        expert_action = 2.0 * (expert_action - low) / (high - low + 1e-6) - 1.0
+        expert_action = torch.clamp(expert_action, -0.95, 0.95)
 
         # Zero gradients
         optimizer_actor.zero_grad()
@@ -64,6 +65,7 @@ def train_one_epoch(epoch_index, tb_writer, low, high, actor, critic):
             next_value, _, _, _ = critic(next_obs, next_actions) # Qpi(s', a')
 
         # TD error = r + γ * Q(s', a') - Q(s, a)
+        reward = reward.unsqueeze(-1)  # Shape [B] -> [B, 1] for broadcasting
         td_error = reward + cfg.gamma * next_value - value
         td_loss = 0.5 * td_error.pow(2).mean()
 
@@ -73,7 +75,7 @@ def train_one_epoch(epoch_index, tb_writer, low, high, actor, critic):
         # When E[Qpi(s, a)] - E[Qmu(s, a)] is large and positive: The critic is overestimating the policy's actions compared to offline data → ADD penalty to loss → increase loss → reduce Q-values
         cql_penalty = (online_q_values.mean() - value.mean()).detach()  
         # Combined critic loss: TD loss + CQL penalty
-        critic_loss = td_loss + cfg.alpha * cql_penalty
+        critic_loss = td_loss + 2 * cql_penalty
 
         # Backward pass and optimization
         actor_loss.backward()
@@ -125,8 +127,6 @@ critic = Critic(
         vmin=-15.0,
         vmax=15.0,
         hidden_dim=cfg.critic_hidden_dim,
-        use_norm=cfg.use_critic_norm,
-        use_encoder_norm=cfg.use_critic_encoder_norm,
         encoder_layers=cfg.num_critic_encoder_layers,
         head_layers=cfg.num_critic_head_layers,
         pred_layers=cfg.num_critic_pred_layers,
@@ -192,6 +192,7 @@ for epoch in range(EPOCHS):
             # Normalize actions to [-1, 1]
             expert_action = 2.0 * (expert_action - low) / (high - low + 1e-6) - 1.0
             expert_action = torch.clamp(expert_action, -0.95, 0.95)
+            reward = reward.unsqueeze(-1)  # Shape [B] -> [B, 1] for broadcasting
             obs = obs.to(device)
             expert_action = expert_action.to(device)
             reward = reward.to(device)
@@ -216,14 +217,15 @@ for epoch in range(EPOCHS):
                 next_actions = next_dist.rsample()
                 next_value, _, _, _ = critic(next_obs, next_actions)
             
-            td_error = reward + cfg.gamma * next_value - value
+            reward_unsqueezed = reward.unsqueeze(-1) if reward.dim() == 1 else reward  # Ensure [B, 1]
+            td_error = reward_unsqueezed + cfg.gamma * next_value - value
             td_loss = 0.5 * td_error.pow(2).mean()
             
             online_actions = dist.rsample()
             online_q_values, _, _, _ = critic(obs, online_actions)
             cql_penalty = (online_q_values.mean() - value.mean()).detach()
             
-            val_critic_loss = td_loss + cfg.alpha * cql_penalty
+            val_critic_loss = td_loss + 2 * cql_penalty
             val_critic_loss_sum += val_critic_loss.item()
 
     avg_val_actor_loss = val_actor_loss_sum / val_num_batches
@@ -243,17 +245,17 @@ for epoch in range(EPOCHS):
     # Save best actor based on validation actor loss
     if avg_val_actor_loss < best_actor_vloss:
         best_actor_vloss = avg_val_actor_loss
-        if not os.path.exists('bc_utils'):
-            os.makedirs('bc_utils')
-        model_path = f'bc_utils/bc_model_actor_{timestamp}_{epoch_number}'
+        if not os.path.exists('../saved_models_AC_alpha_2'):
+            os.makedirs('../saved_models_AC_alpha_2')
+        model_path = f'../saved_models_AC_alpha_2/bc_model_actor_{timestamp}_{epoch_number}'
         torch.save(actor.state_dict(), model_path)
         print(f'  ✓ Saved best actor model')
 
     if avg_val_critic_loss < best_critic_vloss:
         best_critic_vloss = avg_val_critic_loss
-        if not os.path.exists('bc_utils'):
-            os.makedirs('bc_utils')
-        model_path = f'bc_utils/bc_model_critic_{timestamp}_{epoch_number}'
+        if not os.path.exists('../saved_models_AC_alpha_2'):
+            os.makedirs('../saved_models_AC_alpha_2')
+        model_path = f'../saved_models_AC_alpha_2/bc_model_critic_{timestamp}_{epoch_number}'
         torch.save(critic.state_dict(), model_path)
         print(f'  ✓ Saved best critic model')
 
@@ -266,8 +268,8 @@ print(f"Training Complete! Best validation critic loss: {best_critic_vloss:.4f}"
 print(f"{'='*60}")
 
 # Save final loss plots
-if not os.path.exists('bc_utils/loss_plots'):
-    os.makedirs('bc_utils/loss_plots')
+if not os.path.exists('../saved_models_AC_alpha_2/loss_plots'):
+    os.makedirs('../saved_models_AC_alpha_2/loss_plots')
 
 # Plot actor losses
 plt.figure(figsize=(10, 5))
@@ -279,7 +281,7 @@ plt.title("Actor Loss Over Epochs")
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig("bc_utils/loss_plots/actor_loss.png")
+plt.savefig("../saved_models_AC_alpha_2/loss_plots/actor_loss.png")
 plt.close()
 
 # Plot critic losses
@@ -292,7 +294,7 @@ plt.title("Critic Loss Over Epochs")
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig("bc_utils/loss_plots/critic_loss.png")
+plt.savefig("../saved_models_AC_alpha_2/loss_plots/critic_loss.png")
 plt.close()
 
-print(f"Saved loss plots to bc_utils/loss_plots/")
+print(f"Saved loss plots to ../saved_models_AC_alpha_2/loss_plots/")
