@@ -27,6 +27,126 @@ import torch
 logging.basicConfig(level=logging.INFO)
 
 
+def load_bc_weights_to_critic(bc_checkpoint_path: str, jax_critic: nnx.Module) -> nnx.Module:
+    """Load PyTorch BC weights into JAX critic"""
+    
+    if not os.path.exists(bc_checkpoint_path):
+        logging.warning(f"Checkpoint not found at {bc_checkpoint_path}")
+        return jax_critic
+    
+    logging.info(f"Loading BC critic weights from {bc_checkpoint_path}")
+    
+    try:
+        checkpoint = torch.load(bc_checkpoint_path, map_location="cpu")
+        state_dict = checkpoint.get("model_state_dict", checkpoint.get("state_dict", checkpoint))
+        
+        # Get all nnx.Linear layers recursively
+        def get_linears(m):
+            linears = []
+            if isinstance(m, nnx.Linear):
+                return [m]
+            if isinstance(m, nnx.Sequential):
+                for layer in m.layers:
+                    linears.extend(get_linears(layer))
+            if hasattr(m, 'input_layer'):
+                linears.extend(get_linears(m.input_layer))
+            if hasattr(m, 'main_layers'):
+                linears.extend(get_linears(m.main_layers))
+            if hasattr(m, 'output_layer'):
+                linears.extend(get_linears(m.output_layer))
+            return linears
+        
+        total = 0
+        
+        # Load feature_module -> feature_encoder
+        feature_torch = {}
+        for key in state_dict:
+            if "feature_module" in key and ".0." in key:
+                parts = key.split('.')
+                try:
+                    idx = parts.index('net') + 1
+                    layer_num = parts[idx]
+                    if layer_num not in feature_torch:
+                        feature_torch[layer_num] = {}
+                    if "weight" in key:
+                        feature_torch[layer_num]['weight'] = state_dict[key].cpu().numpy()
+                    elif "bias" in key:
+                        feature_torch[layer_num]['bias'] = state_dict[key].cpu().numpy()
+                except (ValueError, IndexError):
+                    pass
+        
+        feature_jax = get_linears(jax_critic.feature_encoder)
+        for i, (layer_num, tensors) in enumerate(sorted(feature_torch.items())):
+            if i < len(feature_jax):
+                if 'weight' in tensors:
+                    feature_jax[i].kernel = jnp.array(tensors['weight'].T)
+                    total += 1
+                if 'bias' in tensors:
+                    feature_jax[i].bias = jnp.array(tensors['bias'])
+                    total += 1
+        
+        # Load critic_module -> q_network
+        critic_torch = {}
+        for key in state_dict:
+            if "critic_module" in key and ".0." in key:
+                parts = key.split('.')
+                try:
+                    idx = parts.index('net') + 1
+                    layer_num = parts[idx]
+                    if layer_num not in critic_torch:
+                        critic_torch[layer_num] = {}
+                    if "weight" in key:
+                        critic_torch[layer_num]['weight'] = state_dict[key].cpu().numpy()
+                    elif "bias" in key:
+                        critic_torch[layer_num]['bias'] = state_dict[key].cpu().numpy()
+                except (ValueError, IndexError):
+                    pass
+        
+        critic_jax = get_linears(jax_critic.q_network)
+        for i, (layer_num, tensors) in enumerate(sorted(critic_torch.items())):
+            if i < len(critic_jax):
+                if 'weight' in tensors:
+                    critic_jax[i].kernel = jnp.array(tensors['weight'].T)
+                    total += 1
+                if 'bias' in tensors:
+                    critic_jax[i].bias = jnp.array(tensors['bias'])
+                    total += 1
+        
+        # Load pred_module -> prediction_network
+        pred_torch = {}
+        for key in state_dict:
+            if "pred_module" in key and ".0." in key:
+                parts = key.split('.')
+                try:
+                    idx = parts.index('net') + 1
+                    layer_num = parts[idx]
+                    if layer_num not in pred_torch:
+                        pred_torch[layer_num] = {}
+                    if "weight" in key:
+                        pred_torch[layer_num]['weight'] = state_dict[key].cpu().numpy()
+                    elif "bias" in key:
+                        pred_torch[layer_num]['bias'] = state_dict[key].cpu().numpy()
+                except (ValueError, IndexError):
+                    pass
+        
+        pred_jax = get_linears(jax_critic.prediction_network)
+        for i, (layer_num, tensors) in enumerate(sorted(pred_torch.items())):
+            if i < len(pred_jax):
+                if 'weight' in tensors:
+                    pred_jax[i].kernel = jnp.array(tensors['weight'].T)
+                    total += 1
+                if 'bias' in tensors:
+                    pred_jax[i].bias = jnp.array(tensors['bias'])
+                    total += 1
+        
+        logging.info(f"Transferred {total} parameters")
+        return jax_critic
+        
+    except Exception as e:
+        logging.error(f"Failed to load BC weights: {e}")
+        return jax_critic
+
+
 def load_bc_weights_to_actor(bc_checkpoint_path: str, jax_actor: nnx.Module) -> nnx.Module:
     """
     Load PyTorch BC weights into JAX actor's feature_encoder.
@@ -251,12 +371,19 @@ def make_init_fn(
         logging.info("JAX Actor structure successfully created")
 
         # Load BC pretrained weights into actor's feature_encoder
-        bc_checkpoint_path = getattr(hparams, "bc_checkpoint_path", None)
-        if bc_checkpoint_path and os.path.exists(bc_checkpoint_path):
-            logging.info(f"Loading BC weights from {bc_checkpoint_path}")
-            actor = load_bc_weights_to_actor(bc_checkpoint_path, actor)
-        else:
-            logging.info("No BC checkpoint specified or found, using random initialization")
+        # bc_checkpoint_path = getattr(hparams, "bc_checkpoint_path", None)
+        # if bc_checkpoint_path and os.path.exists(bc_checkpoint_path):
+        #     logging.info(f"Loading BC weights from {bc_checkpoint_path}")
+        #     actor = load_bc_weights_to_actor(bc_checkpoint_path, actor)
+        #     # Also load weights into critic if specified
+        #     bc_critic_checkpoint_path = getattr(hparams, "bc_critic_checkpoint_path", None)
+        #     if bc_critic_checkpoint_path and os.path.exists(bc_critic_checkpoint_path):
+        #         logging.info(f"Loading BC critic weights from {bc_critic_checkpoint_path}")
+        #         critic = load_bc_weights_to_critic(bc_critic_checkpoint_path, critic)
+        #     else:
+        #         logging.info("No BC critic checkpoint specified, using random initialization for critic")
+        # else:
+        #     logging.info("No BC checkpoint specified or found, using random initialization")
 
         return REPPOTrainState.create(
             graphdef=nnx.graphdef(actor),

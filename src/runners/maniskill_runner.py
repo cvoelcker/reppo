@@ -69,7 +69,7 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
 
         transitions = []
         obs = train_state.last_obs
-        obs = filter_obs_to_bc_format(obs)  # Filter observations to 25-dim format
+        # obs = filter_obs_to_bc_format(obs)  # Filter observations to 25-dim format
         prev_step = train_state.time_steps
         prev_time = time.perf_counter()
         for i in range(num_steps):
@@ -78,9 +78,9 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
             action, _ = policy(act_key, obs)
             # Take a step in the environment
             next_obs, reward, done, truncated, info = env.step(action)
-            next_obs = filter_obs_to_bc_format(next_obs)  # Filter observations to 25-dim format
             if "final_observation" in info:
-                _next_obs = to_jax(filter_obs_to_bc_format(info["final_observation"]))
+                _next_obs = to_jax(info['final_observation'])
+                # _next_obs = to_jax(filter_obs_to_bc_format(info["final_observation"]))
             else:
                 _next_obs = next_obs
             # print('Inside Maniskill Runner:')
@@ -116,14 +116,14 @@ def make_eval_fn(env: gymnasium.Env, max_episode_steps: int) -> EvalFn:
     def evaluate(key: Key, policy: Policy) -> dict:
         # Reset the environment
         obs, _ = env.reset()
-        obs = filter_obs_to_bc_format(obs)  # Filter observations to 25-dim format
+        # obs = to_jax(filter_obs_to_bc_format(obs))  # Filter observations to 25-dim format
         metrics = defaultdict(list)
         num_episodes = 0
         for _ in range(max_episode_steps):
             key, act_key = jax.random.split(key)
             action, _ = policy(act_key, obs)
             next_obs, reward, terminated, truncated, infos = env.step(action)
-            next_obs = filter_obs_to_bc_format(next_obs)  # Filter observations to 25-dim format
+            # next_obs = filter_obs_to_bc_format(next_obs)  # Filter observations to 25-dim format
             if "final_info" in infos:
                 mask = infos["_final_info"]
                 num_episodes += mask.sum()
