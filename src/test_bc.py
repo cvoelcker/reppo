@@ -7,7 +7,11 @@ import numpy as np
 from omegaconf import OmegaConf
 from collections import defaultdict
 from src.network_utils.torch_models import Actor
-
+import hydra
+from pathlib import Path
+import h5py
+from src.maniskill_utils.maniskill_dataloader_shabnam import DemoConfig, ManiSkillDemoLoader
+    
 def denormalize_action(normalized_action, low, high):
     """
     Denormalize actions from [-1, 1] back to original action space [low, high].
@@ -21,24 +25,21 @@ def make_eval_env(env_id, seed=0, render=True):
     env = gym.make(
         env_id,
         obs_mode="state_dict",          # MUST match training obs
-        control_mode="pd_joint_pos",
+        control_mode="pd_joint_delta_pos",
         render_mode="rgb_array" if render else None,
         reward_mode = "normalized_dense" # Instead of just a sparse "success/fail" signal at the end, it gives normalized or scaled rewards (e.g., [−α, α] or [1−β, 1+β]) at each time step, indicating how well the agent is doing.
     )
     env.reset(seed=seed)
     return env
 
-def replay_expert_and_measure_mse(actor, dataset_low, dataset_high, env_low, env_high, demo_path="/scratch/cluster/idutta/h5_files/trajectory.rgb.pd_joint_pos.physx_cpu.h5", device='cpu'):
+def replay_expert_and_measure_mse(actor, dataset_low, dataset_high, env_low, env_high, env_id, demo_path, device='cpu'):
     """
     Replay expert states from H5 file and measure MSE between policy and expert actions.
     Policy outputs are normalized by DATASET bounds, so denormalize using dataset bounds, then clip to env bounds.
     """
-    import h5py
-    from src.maniskill_utils.maniskill_dataloader_shabnam import DemoConfig, ManiSkillDemoLoader
-    
     # Load expert demonstrations
     config = DemoConfig(device=torch.device("cpu"), filter_success_only=True)
-    loader = ManiSkillDemoLoader(config, 'PushCube-v1')
+    loader = ManiSkillDemoLoader(config, env_id)
     trajectories, metadata = loader.load_demo_dataset(demo_path)
     
     # Run the policy on the dataset to log stats and MSE
@@ -98,9 +99,20 @@ def flatten_obs(obs_dict):
                     obs_list.append(obs_dict[key][subkey].reshape(obs_dict[key][subkey].shape[0], -1))
     return np.concatenate(obs_list, axis=1)
 
-def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yaml",  model_path = "../reppo/bc_utils/bc_model_actor_20260127_195206_180.pth"):
-    # Load config
-    cfg = OmegaConf.load(cfg_path)
+def test(cfg, env_id=None, model_path=None, demo_path=None):
+    # Use cfg from Hydra if provided, otherwise load it
+    if cfg is None:
+        config_path = Path(__file__).parent.parent / "config" / "default" / "reppo_maniskill.yaml"
+        cfg = OmegaConf.load(str(config_path))
+    
+    # Override env_id and demo_path if provided
+    if env_id:
+        cfg.env.name = env_id
+    if demo_path:
+        cfg.env.demo.demo_path = demo_path
+    
+    env_id = cfg.env.name
+    demo_path = cfg.env.demo.demo_path
 
     # Load actor
     device = f'cuda:0' if torch.cuda.is_available() else 'cpu'
@@ -109,12 +121,12 @@ def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yam
     actor = Actor(
         n_obs=n_obs,
         n_act=n_act,
-        ent_start=cfg.ent_start,
-        kl_start=cfg.kl_start,
-        hidden_dim=cfg.actor_hidden_dim,
-        use_norm=cfg.use_actor_norm,
-        layers=cfg.num_actor_layers,
-        min_std=cfg.actor_min_std,
+        ent_start=cfg.algorithm.ent_start,
+        kl_start=cfg.algorithm.kl_start,
+        hidden_dim=cfg.algorithm.actor_hidden_dim,
+        use_norm=cfg.algorithm.use_actor_norm,
+        layers=cfg.algorithm.num_actor_layers,
+        min_std=cfg.algorithm.actor_min_std,
         device=device,
     )
     
@@ -123,7 +135,24 @@ def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yam
     # actor.register_parameter('dim_weights', dim_weights_param)
     
     # Load trained weights
-    actor.load_state_dict(torch.load(model_path, map_location=device))
+    if model_path is None:
+        # Find the latest model in the outputs directory (use absolute path)
+        outputs_dir = Path(__file__).parent.parent / "outputs"
+        if outputs_dir.exists():
+            model_dirs = list(outputs_dir.glob("*/saved_models_*/bc_model_actor_*"))
+            if model_dirs:
+                model_path = str(max(model_dirs, key=lambda p: p.stat().st_mtime))
+            else:
+                raise ValueError("No model files found in outputs directory")
+        else:
+            raise ValueError(f"Outputs directory not found: {outputs_dir}")
+    
+    # Ensure model_path is absolute or properly relative
+    model_path = Path(model_path).resolve()
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+    
+    actor.load_state_dict(torch.load(str(model_path), map_location=device))
     actor.eval()
     
     # Stop gradients for all parameters during evaluation
@@ -131,7 +160,7 @@ def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yam
         param.requires_grad = False
 
     # Create a temporary env to get action bounds
-    temp_env = gym.make(env_id, obs_mode="state_dict", control_mode="pd_joint_pos")
+    temp_env = gym.make(env_id, obs_mode="state_dict", control_mode="pd_joint_delta_pos")
     env_low = torch.from_numpy(temp_env.action_space.low).float()
     env_high = torch.from_numpy(temp_env.action_space.high).float()
     temp_env.close()
@@ -148,7 +177,7 @@ def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yam
     config = DemoConfig(device=torch.device("cpu"), filter_success_only=True)
     loader = ManiSkillDemoLoader(config, env_id)
     trajectories_for_bounds, _ = loader.load_demo_dataset(
-        trajectory_path="/scratch/cluster/idutta/h5_files/trajectory.rgb.pd_joint_pos.physx_cpu.h5"
+        trajectory_path=cfg.env.demo.demo_path
     )
     
     # Collect all actions from dataset
@@ -177,14 +206,12 @@ def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yam
     print(f"=" * 50)
 
     # define configs
-    num_episodes=300
+    num_episodes=20
     max_steps=1000
-    parent_dir = "./bc_utils/eval_videos_state_noise_v4_large"
-    if not os.path.exists(parent_dir):
-        os.mkdir(parent_dir)
-    save_dir = os.path.join(parent_dir, env_id.split('-')[0])
-    if not os.path.exists(save_dir):
-        os.mkdir(save_dir)
+    parent_dir = Path(__file__).parent.parent / "bc_utils" / "eval_videos_state_noise_v4_large"
+    parent_dir.mkdir(parents=True, exist_ok=True)
+    save_dir = parent_dir / env_id.split('-')[0]
+    save_dir.mkdir(parents=True, exist_ok=True)
 
     # save stats
     stats = defaultdict(list)
@@ -252,7 +279,7 @@ def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yam
             obs_tensor = torch.as_tensor(flatten_obs(obs), dtype=torch.float32, device=device)
 
         # save video
-        video_path = f"{save_dir}/ep_{ep:03d}.mp4"
+        video_path = str(save_dir / f"ep_{ep:03d}.mp4")
         frames = np.stack(frames, axis=0)
         imageio.mimsave(video_path, frames, fps=30)
 
@@ -305,6 +332,23 @@ def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yam
     print(f"=" * 50)
     
     # Replay expert states and measure MSE
-    replay_expert_and_measure_mse(actor, dataset_low, dataset_high, env_low, env_high, device=device)
+    replay_expert_and_measure_mse(
+        actor,
+        dataset_low,
+        dataset_high,
+        env_low,
+        env_high,
+        env_id,
+        demo_path,
+        device=device,
+    )
 
-test('PushCube-v1')
+@hydra.main(version_base=None, config_path="../config/default", config_name="reppo_maniskill")
+def main(cfg):
+    OmegaConf.set_struct(cfg, False)
+    # Accept model_path from config if provided, otherwise None to auto-detect
+    model_path = OmegaConf.select(cfg, "model_path")
+    test(cfg=cfg, env_id=None, model_path=model_path, demo_path=cfg.env.demo.demo_path)
+
+if __name__ == "__main__":
+    main()

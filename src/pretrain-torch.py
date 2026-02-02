@@ -129,152 +129,175 @@ def train_one_epoch(epoch_index, tb_writer, low, high, actor):
         avg_denorm_expert_std
     )
 
-# Load config
-cfg_path = "../reppo/config/algorithm/reppo.yaml"
-cfg = OmegaConf.load(cfg_path)
+@hydra.main(version_base=None, config_path="../config/default", config_name="reppo_maniskill")
+def main(cfg: OmegaConf):
+    """Main training function."""
+    # Disable struct mode to allow CLI overrides
+    OmegaConf.set_struct(cfg, False)
+    
+    global device, train_loader, val_loader, optimizer
+    
+    # Initializing in a separate cell so we can easily add more epochs to the same run
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    writer = SummaryWriter('runs/fashion_trainer_{}'.format(timestamp))
+    epoch_number = 0
 
-# Initializing in a separate cell so we can easily add more epochs to the same run
-timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-writer = SummaryWriter('runs/fashion_trainer_{}'.format(timestamp))
-epoch_number = 0
+    # Initilaize BC specific variables
+    EPOCHS = 200
+    device = f'cuda:0' if torch.cuda.is_available() else 'cpu'
+    best_vloss = 1_000_000
 
-# Initilaize BC specific variables
-EPOCHS = 200
-batch_size = 64
-best_vloss = 1_000_000
-device = f'cuda:0' if torch.cuda.is_available() else 'cpu'
-train_loader, val_loader, n_obs, n_act, low, high = load_demos_for_training("PushCube-v1", device = device, filter_success=True)
-# print(n_obs, n_act)
-actor = Actor(
-    n_obs=n_obs,
-    n_act=n_act,
-    ent_start=cfg.ent_start,
-    kl_start=cfg.kl_start,
-    hidden_dim=cfg.actor_hidden_dim,
-    use_norm=cfg.use_actor_norm,
-    layers=cfg.num_actor_layers,
-    min_std=cfg.actor_min_std,
-    device=device,
-).to(device)
+    # Load demo parameters from config
+    env_name = cfg.env.get('env_id') or cfg.env.name
+    batch_size = cfg.env.demo.batch_size
+    demo_path = cfg.env.demo.demo_path
+    max_episodes = cfg.env.demo.max_episodes
+    filter_success = cfg.env.demo.filter_success
 
-# Learnable dimension weights for weighted loss
-# These will be learned during training to weight important dimensions (e.g., gripper)
-# Used in both NLL and MSE losses
-# dim_weights_param = torch.nn.Parameter(torch.ones(n_act, device=device))
-# actor.register_parameter('dim_weights', dim_weights_param)
-
-optimizer = optim.AdamW(
-        list(actor.parameters()),
-        lr=float(cfg.optimizer.learning_rate)
+    # Load demonstrations using config parameters
+    train_loader, val_loader, n_obs, n_act, low, high = load_demos_for_training(
+        env_id=env_name,
+        device=device,
+        bsize=batch_size,
+        demo_path=demo_path,
+        max_episodes=max_episodes,
+        filter_success=filter_success
     )
-scaler = GradScaler()
-train_losses = []
-val_losses = []
+    # print(n_obs, n_act)
+    actor = Actor(
+        n_obs=n_obs,
+        n_act=n_act,
+        ent_start=cfg.algorithm.ent_start,
+        kl_start=cfg.algorithm.kl_start,
+        hidden_dim=cfg.algorithm.actor_hidden_dim,
+        use_norm=cfg.algorithm.use_actor_norm,
+        layers=cfg.algorithm.num_actor_layers,
+        min_std=cfg.algorithm.actor_min_std,
+        device=device,
+    ).to(device)
 
-# Check dataset action stats
-all_actions = torch.cat(
-    [batch["actions"] for batch in train_loader],
-    dim=0
-)
+    # Learnable dimension weights for weighted loss
+    # These will be learned during training to weight important dimensions (e.g., gripper)
+    # Used in both NLL and MSE losses
+    # dim_weights_param = torch.nn.Parameter(torch.ones(n_act, device=device))
+    # actor.register_parameter('dim_weights', dim_weights_param)
 
-print("\n=== DATASET ACTION STATS ===")
-print("Action mean per dim:", all_actions.mean(dim=0))
-print("Action std  per dim:", all_actions.std(dim=0))
-print("Mean action L2 norm:", all_actions.norm(dim=-1).mean().item())
-print("================================\n")
+    optimizer = optim.AdamW(
+            list(actor.parameters()),
+            lr=float(cfg.algorithm.optimizer.learning_rate)
+        )
+    scaler = GradScaler()
+    train_losses = []
+    val_losses = []
 
-for epoch in range(EPOCHS):
-    print(f'\nEPOCH {epoch_number + 1}/{EPOCHS}')
-
-    # ===== TRAINING PHASE =====
-    actor.train()
-    avg_actor_loss, avg_policy_std, avg_mean_action_norm_pre, avg_mean_action_norm_post, avg_action_std_post_tanh, avg_action_l2_error, avg_expert_std, avg_denorm_expert_std = train_one_epoch(epoch_number, writer, low, high, actor)
-    train_losses.append(avg_actor_loss)
-
-    # ===== VALIDATION PHASE =====
-    actor.eval()
-    val_loss_sum = 0.0
-    val_num_batches = 0
-
-    with torch.no_grad():
-        for i, vdata in enumerate(val_loader):
-            obs, expert_action = vdata['observations'], vdata['actions']
-            # Normalize actions to [-1, 1]
-            expert_action = 2.0 * (expert_action - low) / (high - low + 1e-6) - 1.0
-            expert_action = torch.clamp(expert_action, -0.95, 0.95)
-            obs = obs.to(device)
-            expert_action = expert_action.to(device)
-            val_num_batches += 1
-            
-            # ===== ACTOR LOSS =====
-            dist, tanh_mean, _, _, log_std, _ = actor(obs)
-            log_prob = dist.log_prob(expert_action)
-            
-            # NLL: Maximum likelihood estimation
-            nll_loss = -log_prob.sum(dim=-1).mean()
-            
-            # MSE: Explicit mean matching
-            mse_loss = (tanh_mean - expert_action).pow(2).mean()
-
-            # std_reg_coef = 0.10  # regularization on log std to prevent variance collapse
-            action_match_coef = 1 # Weight of action matching to enforce per-dimension mean learning
-            
-            # Combined actor loss
-            val_loss = nll_loss + action_match_coef * mse_loss  # - std_reg_coef * log_std.mean()
-            val_loss_sum += val_loss.item()
-
-    avg_val_loss = val_loss_sum / val_num_batches
-    val_losses.append(avg_val_loss)
-
-    # Print epoch results
-    print(f'  Loss: train={avg_actor_loss:.4f} | val={avg_val_loss:.4f}')
-
-    # TensorBoard logging
-    writer.add_scalars('Actor Loss', {'train': avg_actor_loss, 'val': avg_val_loss}, epoch_number + 1)
-    writer.flush()
-
-    # Save best actor based on validation actor loss
-    if avg_val_loss < best_vloss:
-        best_vloss = avg_val_loss
-        if not os.path.exists('../saved_models_state_noise_v3'):
-            os.makedirs('../saved_models_state_noise_v3')
-        model_path = f'../saved_models_state_noise_v3/bc_model_actor_{timestamp}_{epoch_number}'
-        torch.save(actor.state_dict(), model_path)
-        print(f'  ✓ Saved best actor model')
-
-    epoch_number += 1
-
-    # Print diagnostics
-    print(
-        f"  [Diagnostics] "
-        f"policy_std={avg_policy_std:.4f} | "
-        f"mean_pre_tanh={avg_mean_action_norm_pre:.4f} | "
-        f"mean_post_tanh={avg_mean_action_norm_post:.4f} | "
-        f"action_std_post_tanh={avg_action_std_post_tanh:.4f} | "
-        f"action_l2_error={avg_action_l2_error:.4f} | "
-        f"expert_std={avg_expert_std:.4f}"
+    # Check dataset action stats
+    all_actions = torch.cat(
+        [batch["actions"] for batch in train_loader],
+        dim=0
     )
 
-# ===== TRAINING COMPLETE =====
-print(f"\n{'='*60}")
-print(f"Training Complete! Best validation loss: {best_vloss:.4f}")
-print(f"{'='*60}")
+    print("\n=== DATASET ACTION STATS ===")
+    print("Action mean per dim:", all_actions.mean(dim=0))
+    print("Action std  per dim:", all_actions.std(dim=0))
+    print("Mean action L2 norm:", all_actions.norm(dim=-1).mean().item())
+    print("================================\n")
 
-# Save final loss plots
-if not os.path.exists('bc_utils/loss_plots'):
-    os.makedirs('bc_utils/loss_plots')
+    for epoch in range(EPOCHS):
+        print(f'\nEPOCH {epoch_number + 1}/{EPOCHS}')
 
-# Plot actor losses
-plt.figure(figsize=(10, 5))
-plt.plot(train_losses, label="Train Loss", color="blue")
-plt.plot(val_losses, label="Val Loss", color="red")
-plt.xlabel("Epoch")
-plt.ylabel("Actor Loss")
-plt.title("Actor Loss Over Epochs")
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("bc_utils/loss_plots/actor_loss.png")
-plt.close()
+        # ===== TRAINING PHASE =====
+        actor.train()
+        avg_actor_loss, avg_policy_std, avg_mean_action_norm_pre, avg_mean_action_norm_post, avg_action_std_post_tanh, avg_action_l2_error, avg_expert_std, avg_denorm_expert_std = train_one_epoch(epoch_number, writer, low, high, actor)
+        train_losses.append(avg_actor_loss)
 
-print(f"Saved loss plots to bc_utils/loss_plots/")
+        # ===== VALIDATION PHASE =====
+        actor.eval()
+        val_loss_sum = 0.0
+        val_num_batches = 0
+
+        with torch.no_grad():
+            for i, vdata in enumerate(val_loader):
+                obs, expert_action = vdata['observations'], vdata['actions']
+                # Normalize actions to [-1, 1]
+                expert_action = 2.0 * (expert_action - low) / (high - low + 1e-6) - 1.0
+                expert_action = torch.clamp(expert_action, -0.95, 0.95)
+                obs = obs.to(device)
+                expert_action = expert_action.to(device)
+                val_num_batches += 1
+                
+                # ===== ACTOR LOSS =====
+                dist, tanh_mean, _, _, log_std, _ = actor(obs)
+                log_prob = dist.log_prob(expert_action)
+                
+                # NLL: Maximum likelihood estimation
+                nll_loss = -log_prob.sum(dim=-1).mean()
+                
+                # MSE: Explicit mean matching
+                mse_loss = (tanh_mean - expert_action).pow(2).mean()
+
+                # std_reg_coef = 0.10  # regularization on log std to prevent variance collapse
+                action_match_coef = 1 # Weight of action matching to enforce per-dimension mean learning
+                
+                # Combined actor loss
+                val_loss = nll_loss + action_match_coef * mse_loss  # - std_reg_coef * log_std.mean()
+                val_loss_sum += val_loss.item()
+
+        avg_val_loss = val_loss_sum / val_num_batches
+        val_losses.append(avg_val_loss)
+
+        # Print epoch results
+        print(f'  Loss: train={avg_actor_loss:.4f} | val={avg_val_loss:.4f}')
+
+        # TensorBoard logging
+        writer.add_scalars('Actor Loss', {'train': avg_actor_loss, 'val': avg_val_loss}, epoch_number + 1)
+        writer.flush()
+
+        # Save best actor based on validation actor loss
+        if avg_val_loss < best_vloss:
+            best_vloss = avg_val_loss
+            if not os.path.exists('../saved_models_state_noise_v3'):
+                os.makedirs('../saved_models_state_noise_v3')
+            model_path = f'../saved_models_state_noise_v3/bc_model_actor_{timestamp}_{epoch_number}'
+            torch.save(actor.state_dict(), model_path)
+            print(f'  ✓ Saved best actor model')
+
+        epoch_number += 1
+
+        # Print diagnostics
+        print(
+            f"  [Diagnostics] "
+            f"policy_std={avg_policy_std:.4f} | "
+            f"mean_pre_tanh={avg_mean_action_norm_pre:.4f} | "
+            f"mean_post_tanh={avg_mean_action_norm_post:.4f} | "
+            f"action_std_post_tanh={avg_action_std_post_tanh:.4f} | "
+            f"action_l2_error={avg_action_l2_error:.4f} | "
+            f"expert_std={avg_expert_std:.4f}"
+        )
+
+    # ===== TRAINING COMPLETE =====
+    print(f"\n{'='*60}")
+    print(f"Training Complete! Best validation loss: {best_vloss:.4f}")
+    print(f"{'='*60}")
+
+    # Save final loss plots
+    if not os.path.exists('bc_utils/loss_plots'):
+        os.makedirs('bc_utils/loss_plots')
+
+    # Plot actor losses
+    plt.figure(figsize=(10, 5))
+    plt.plot(train_losses, label="Train Loss", color="blue")
+    plt.plot(val_losses, label="Val Loss", color="red")
+    plt.xlabel("Epoch")
+    plt.ylabel("Actor Loss")
+    plt.title("Actor Loss Over Epochs")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig("bc_utils/loss_plots/actor_loss.png")
+    plt.close()
+
+    print(f"Saved loss plots to bc_utils/loss_plots/")
+
+
+if __name__ == "__main__":
+    main()

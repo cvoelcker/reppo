@@ -1,5 +1,11 @@
 type: maniskill
 name: PushCube-v1
+env_id: PushCube-v1  # Alias for name to support override syntax
+
+# Disable struct mode to allow CLI overrides
+defaults:
+  - _self_
+
 reconfiguration_freq: null
 eval_reconfiguration_freq: 1
 partial_reset: true
@@ -12,9 +18,16 @@ control_mode: pd_joint_delta_pos
 capture_video: false
 save_train_video_freq: null
 env_kwargs:
-  obs_mode: state
+  obs_mode: state_dict
   render_mode: rgb_array
   sim_backend: physx_cuda
 
 vmin: -15
 vmax: 15
+
+# Demo loading configuration
+demo:
+  batch_size: 64
+  demo_path: /scratch/cluster/idutta/h5_files/trajectory.rgb.pd_joint_pos.physx_cpu.h5
+  max_episodes: null
+  filter_success: true
