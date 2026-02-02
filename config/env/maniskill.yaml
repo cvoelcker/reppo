@@ -11,10 +11,9 @@ has_final_obs: true
 control_mode: pd_joint_delta_pos
 capture_video: false
 save_train_video_freq: null
+render_mode: rgb_array
 env_kwargs:
   obs_mode: state
-  render_mode: rgb_array
   sim_backend: physx_cuda
-
 vmin: -15
 vmax: 15

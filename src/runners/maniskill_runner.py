@@ -5,6 +5,8 @@ import numpy as np
 import jax.numpy as jnp
 from collections import defaultdict
 import sys
+import os
+import imageio
 
 from src.common import (
     EvalFn,
@@ -15,8 +17,7 @@ from src.common import (
     Transition,
 )
 from src.env_utils.torch_wrappers.maniskill_wrapper import to_jax
-
-
+    
 def filter_obs_to_bc_format(obs):
     """
     Extract only qpos, qvel, and tcp_pose from observation dictionary.
@@ -113,7 +114,7 @@ def make_rollout_fn(env: gymnasium.Env, num_steps: int, num_envs: int) -> Rollou
 
 
 def make_eval_fn(env: gymnasium.Env, max_episode_steps: int) -> EvalFn:
-    def evaluate(key: Key, policy: Policy) -> dict:
+    def evaluate(key: Key, policy: Policy, step: int = 0) -> dict:
         # Reset the environment
         obs, _ = env.reset()
         # obs = to_jax(filter_obs_to_bc_format(obs))  # Filter observations to 25-dim format

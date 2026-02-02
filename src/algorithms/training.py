@@ -2,6 +2,9 @@ import logging
 import gymnasium
 from gymnax.environments.environment import Environment
 import jax
+import torch
+import numpy as np
+import os
 from src.common import (
     EvalFn,
     InitFn,
@@ -15,6 +18,7 @@ from src.common import (
 )
 from src.algorithms import utils
 import jax.numpy as jnp
+from flax.serialization import to_state_dict
 # from src.maniskill_utils.maniskill_env import OfflineDatasetEnv
 
 from src.env_utils.torch_wrappers.maniskill_wrapper import to_jax
@@ -51,7 +55,7 @@ def make_scan_train_fn(
     eval_interval = int((total_time_steps / (num_steps * num_envs)) // num_eval)
 
     if eval_fn is None:
-        eval_fn = make_eval_fn(eval_env, max_episode_steps)
+        eval_fn = make_eval_fn(eval_env, max_episode_steps, step)
 
     if rollout_fn is None:
         rollout_fn = make_rollout_fn(env, num_steps=num_steps, num_envs=num_envs)
@@ -85,7 +89,7 @@ def make_scan_train_fn(
         )
         train_metrics = jax.tree.map(lambda x: x[-1], train_metrics)
         policy = policy_fn(train_state, not stochastic_eval)
-        eval_metrics = eval_fn(eval_key, policy)
+        eval_metrics = eval_fn(eval_key, policy, train_state.iteration)
         metrics = {
             **utils.prefix_dict("train", train_metrics),
             **utils.prefix_dict("eval", eval_metrics),
@@ -179,6 +183,13 @@ def make_loop_train_fn(
         logging.info(f"Train steps per iteration: {train_steps_per_iteration}.")
         logging.info(f"Total time steps: {total_time_steps}.")
 
+        # Create checkpoint directories under src/ for saving model parameters
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        actor_checkpoint_dir = os.path.join(base_dir, 'checkpoints', 'actor')
+        critic_checkpoint_dir = os.path.join(base_dir, 'checkpoints', 'critic')
+        os.makedirs(actor_checkpoint_dir, exist_ok=True)
+        os.makedirs(critic_checkpoint_dir, exist_ok=True)
+
         step = 0
         for i in range(num_iterations):
             for _ in range(train_steps_per_iteration):
@@ -198,8 +209,35 @@ def make_loop_train_fn(
                 step += 1
             policy = policy_fn(state, not stochastic_eval)
             key, eval_key = jax.random.split(key)
-            eval_metrics = eval_fn(eval_key, policy)
+            eval_metrics = eval_fn(eval_key, policy, state.iteration)
             state = state.replace(iteration=state.iteration + 1)
+
+            # Save model parameters after eval run
+            # Helper function to recursively convert JAX state dict to torch tensors
+            def jax_dict_to_torch(jax_dict, prefix=''):
+                torch_dict = {}
+                for k, v in jax_dict.items():
+                    full_key = f"{prefix}.{k}" if prefix else k
+                    if isinstance(v, dict):
+                        torch_dict.update(jax_dict_to_torch(v, full_key))
+                    elif isinstance(v, (jnp.ndarray, np.ndarray)):
+                        try:
+                            torch_dict[full_key] = torch.from_numpy(np.array(jax.device_get(v)))
+                        except (TypeError, ValueError):
+                            # Skip non-numeric types
+                            pass
+                return torch_dict
+            
+            # Actor
+            jax_actor_dict = to_state_dict(state.actor.params)
+            torch_actor_dict = jax_dict_to_torch(jax_actor_dict)
+            torch.save(torch_actor_dict, os.path.join(actor_checkpoint_dir, f'{env.spec.id}_actor_step_{int(state.iteration)}_v2.pth'))
+            
+            # Critic
+            jax_critic_dict = to_state_dict(state.critic.params)
+            torch_critic_dict = jax_dict_to_torch(jax_critic_dict)
+            torch.save(torch_critic_dict, os.path.join(critic_checkpoint_dir, f'{env.spec.id}_critic_step_{int(state.iteration)}_v2.pth'))
+            
             log_callback(state, utils.prefix_dict("eval", eval_metrics))
         return state, {
             **utils.prefix_dict("train", train_metrics),

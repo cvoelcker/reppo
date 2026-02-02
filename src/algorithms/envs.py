@@ -14,6 +14,7 @@ from gymnax.environments.spaces import (
 )
 import gymnasium as gym
 from jax import numpy as jnp
+import os
 
 from src.env_utils.jax_wrappers import (
     BatchEnv,
@@ -147,31 +148,46 @@ def _make_maniskill_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
             cfg.env.eval_reconfiguration_freq if eval else cfg.env.reconfiguration_freq
         )
         partial_resets = cfg.env.eval_partial_reset if eval else cfg.env.partial_reset
+        
         envs = gym.make(
             cfg.env.name,
             num_envs=cfg.algorithm.num_envs,
             reconfiguration_freq=reconfiguration_freq,
+            # render_mode=cfg.env.render_mode if "render_mode" in cfg.env else None,
             **env_kwargs,
         )
 
         if isinstance(envs.action_space, gym.spaces.Dict):
             envs = FlattenActionSpaceWrapper(envs)
+
+        # capture videos if specified
         if cfg.env.capture_video:
-            if cfg.env.save_train_video_freq is not None or eval:
-                video_dir = "train_videos" if not eval else "eval_videos"
-                save_video_trigger = (
-                    lambda x: (x // cfg.algorithm.num_steps)
-                    % cfg.env.save_train_video_freq
-                    == 0
-                )
-                envs = RecordEpisode(
-                    envs,
-                    output_dir=video_dir,
-                    save_trajectory=False,
-                    save_video_trigger=save_video_trigger,
-                    max_steps_per_video=cfg.algorithm.num_steps,
-                    video_fps=30,
-                )
+            video_dir = "../train_videos" if not eval else "../eval_videos"
+            if not os.path.exists(video_dir):
+                os.makedirs(video_dir)
+            if eval:
+                # Always save videos during evaluation
+                save_video_trigger = lambda x: True
+            else:
+                # Use frequency trigger for training
+                if cfg.env.save_train_video_freq is not None:
+                    save_video_trigger = (
+                        lambda x: (x // cfg.algorithm.num_steps)
+                        % cfg.env.save_train_video_freq
+                        == 0
+                    )
+                else:
+                    save_video_trigger = lambda x: False
+            
+            envs = RecordEpisode(
+                envs,
+                output_dir=video_dir,
+                save_trajectory=False,
+                save_video_trigger=save_video_trigger,
+                max_steps_per_video=cfg.algorithm.num_steps,
+                video_fps=30,
+            )
+
         envs = ManiSkillVectorEnv(
             envs,
             cfg.algorithm.num_envs,

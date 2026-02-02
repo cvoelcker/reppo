@@ -139,6 +139,14 @@ class ManiSkillWrapper(Wrapper):
         Takes a step in the environment with the given action.
         Returns the next observation, reward, done, and info.
         """
+        # Scale action from [-1, 1] to [action_low, action_high]
+        action_low = np.array(self.action_space.low)
+        action_high = np.array(self.action_space.high)
+        
+        # Check if action space is not [-1, 1]
+        if not (np.allclose(action_low, -1) and np.allclose(action_high, 1)):
+            action = action_low + (action + 1.0) / 2.0 * (action_high - action_low)
+        
         action = to_torch(action)
         obs, reward, terminated, truncated, info = self.env.step(action)
         obs = to_jax(obs)

@@ -27,9 +27,7 @@ class REPPOPolicy(nnx.Module):
     ):
         self.base = base
         self.normalizer = normalizer
-        self.normalization_state = nnx.data(normalization_state) # normalization_state
-        # The NormalizationState class is a flax.struct.PyTreeNode containing mean, var, and count, which are themselves PyTreeNodes (likely containing JAX arrays).
-        # This normalization_state contains JAX arrays, and must be wrapped in nnx.data to avoid Flax nnx static attribute errors.
+        self.normalization_state = nnx.data(normalization_state)
         self._eval_mode = eval
         self.action_space = action_space
 

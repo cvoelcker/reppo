@@ -373,17 +373,17 @@ def make_init_fn(
         # Load BC pretrained weights into actor's feature_encoder
         # bc_checkpoint_path = getattr(hparams, "bc_checkpoint_path", None)
         # if bc_checkpoint_path and os.path.exists(bc_checkpoint_path):
-        #     logging.info(f"Loading BC weights from {bc_checkpoint_path}")
+        #     logging.info(f"Loading BC actor weights from {bc_checkpoint_path}")
         #     actor = load_bc_weights_to_actor(bc_checkpoint_path, actor)
-        #     # Also load weights into critic if specified
-        #     bc_critic_checkpoint_path = getattr(hparams, "bc_critic_checkpoint_path", None)
-        #     if bc_critic_checkpoint_path and os.path.exists(bc_critic_checkpoint_path):
-        #         logging.info(f"Loading BC critic weights from {bc_critic_checkpoint_path}")
-        #         critic = load_bc_weights_to_critic(bc_critic_checkpoint_path, critic)
-        #     else:
-        #         logging.info("No BC critic checkpoint specified, using random initialization for critic")
         # else:
-        #     logging.info("No BC checkpoint specified or found, using random initialization")
+        #     logging.info("No BC actor checkpoint specified or found, using random initialization")
+        # Also load weights into critic if specified
+        # bc_critic_checkpoint_path = getattr(hparams, "bc_critic_checkpoint_path", None)
+        # if bc_critic_checkpoint_path and os.path.exists(bc_critic_checkpoint_path):
+        #     logging.info(f"Loading BC critic weights from {bc_critic_checkpoint_path}")
+        #     critic = load_bc_weights_to_critic(bc_critic_checkpoint_path, critic)
+        # else:
+        #     logging.info("No BC critic checkpoint specified or found, using random initialization for critic")
 
         return REPPOTrainState.create(
             graphdef=nnx.graphdef(actor),

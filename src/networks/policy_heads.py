@@ -4,7 +4,6 @@ import jax.numpy as jnp
 from flax import nnx
 import math
 
-
 class DiscretePolicyHead(nnx.Module):
     def __call__(
         self,
@@ -26,11 +25,16 @@ class TanhGaussianPolicyHead(nnx.Module):
     def __init__(
         self,
         min_std: float = 1e-1,
-        fixed_std: bool = False,
+        fixed_std: bool = False
+        # action_low: None | jax.Array = None,
+        # action_high: None | jax.Array = None,
     ):
         self.min_std = min_std
         self.fixed_std = fixed_std
         self.std_param = nnx.Param(jnp.ones(1) * math.log(0.6)) if fixed_std else None
+        # Store action bounds to scale distribution parameters
+        # self.action_low = action_low
+        # self.action_high = action_high
 
     def __call__(
         self,
