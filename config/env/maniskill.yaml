@@ -1,6 +1,5 @@
 type: maniskill
 name: PushCube-v1
-env_id: PushCube-v1  # Alias for name to support override syntax
 
 # Disable struct mode to allow CLI overrides
 defaults:

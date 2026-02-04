@@ -21,11 +21,11 @@ def denormalize_action(normalized_action, low, high):
     denormalized = (normalized_action + 1.0) * (high - low) / 2.0 + low
     return denormalized
 
-def make_eval_env(env_id, seed=0, render=True):
+def make_eval_env(env_id, control_mode="pd_joint_pos", seed=0, render=True):
     env = gym.make(
         env_id,
         obs_mode="state_dict",          # MUST match training obs
-        control_mode="pd_joint_delta_pos",
+        control_mode=control_mode,
         render_mode="rgb_array" if render else None,
         reward_mode = "normalized_dense" # Instead of just a sparse "success/fail" signal at the end, it gives normalized or scaled rewards (e.g., [−α, α] or [1−β, 1+β]) at each time step, indicating how well the agent is doing.
     )
@@ -62,8 +62,8 @@ def replay_expert_and_measure_mse(actor, dataset_low, dataset_high, env_low, env
                 # Sample action from the distribution (in normalized [-1, 1] space)
                 sampled_action_normalized = pi.sample().squeeze(0).cpu().numpy()
                 
-                # Denormalize using DATASET bounds (policy was trained on dataset-normalized actions)
-                policy_action = denormalize_action(sampled_action_normalized, dataset_low.numpy(), dataset_high.numpy())
+                # Denormalize using ENV bounds (policy was trained on env-normalized actions)
+                policy_action = denormalize_action(sampled_action_normalized, env_low.numpy(), env_high.numpy())
                 
                 # Clip to ENV bounds before feeding to environment
                 policy_action = np.clip(policy_action, env_low.numpy(), env_high.numpy())
@@ -89,15 +89,43 @@ def replay_expert_and_measure_mse(actor, dataset_low, dataset_high, env_low, env
         print(f"=" * 50)
 
 def flatten_obs(obs_dict):
-    # flatten the observation dictionary into a single array.
+    # Flatten the observation dictionary to match the demo data format
+    # Demo includes: agent.qpos, agent.qvel, extra.goal_pos, extra.is_grasped, extra.tcp_pose
+    # (Does NOT include: extra.obj_pose, extra.obj_to_goal_pos, extra.tcp_to_obj_pos)
     obs_list = []
     for key in sorted(obs_dict.keys()):
-        if key in ['agent', 'extra']:
-            subkeys = obs_dict[key].keys()
-            for subkey in subkeys:
-                if subkey in ['qpos', 'qvel', 'tcp_pose']:
-                    obs_list.append(obs_dict[key][subkey].reshape(obs_dict[key][subkey].shape[0], -1))
-    return np.concatenate(obs_list, axis=1)
+        if key in ('agent', 'extra'):
+            sub_group = obs_dict[key]
+            for sub_key in sorted(sub_group.keys()):
+                # Only include keys that were in the demo
+                if key == 'agent' and sub_key in ['qpos', 'qvel']:
+                    data = sub_group[sub_key]
+                    if isinstance(data, np.ndarray):
+                        data_flat = data.reshape(data.shape[0], -1) if len(data.shape) > 1 else data.reshape(1, -1)
+                    else:
+                        data_array = np.asarray(data)
+                        data_flat = data_array.reshape(1, -1) if data_array.ndim == 1 else data_array.reshape(data_array.shape[0], -1)
+                    obs_list.append(data_flat)
+                elif key == 'extra' and sub_key in ['goal_pos', 'is_grasped', 'tcp_pose']:
+                    data = sub_group[sub_key]
+                    if isinstance(data, np.ndarray):
+                        if len(data.shape) == 1:
+                            data_flat = data.reshape(1, -1)
+                        else:
+                            data_flat = data.reshape(data.shape[0], -1)
+                    else:
+                        data_array = np.asarray(data)
+                        if data_array.ndim == 1:
+                            data_flat = data_array.reshape(1, -1)
+                        else:
+                            data_flat = data_array.reshape(data_array.shape[0], -1)
+                    obs_list.append(data_flat)
+    
+    if not obs_list:
+        raise ValueError(f"No observation data found in obs_dict with keys: {obs_dict.keys()}")
+    
+    result = np.concatenate(obs_list, axis=1)
+    return result
 
 def test(cfg, env_id=None, model_path=None, demo_path=None):
     # Use cfg from Hydra if provided, otherwise load it
@@ -116,8 +144,15 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
 
     # Load actor
     device = f'cuda:0' if torch.cuda.is_available() else 'cpu'
-    n_obs = 25
-    n_act = 8
+    
+    # Dynamically determine observation and action dimensions from demo data
+    from src.maniskill_utils.maniskill_dataloader_shabnam import DemoConfig, ManiSkillDemoLoader
+    config = DemoConfig(device=torch.device("cpu"), filter_success_only=True)
+    loader = ManiSkillDemoLoader(config, env_id)
+    trajectories_for_dims, _ = loader.load_demo_dataset(demo_path)
+    n_obs = trajectories_for_dims[0]["observations"].shape[1]
+    n_act = trajectories_for_dims[0]["actions"].shape[1]
+    
     actor = Actor(
         n_obs=n_obs,
         n_act=n_act,
@@ -129,6 +164,7 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
         min_std=cfg.algorithm.actor_min_std,
         device=device,
     )
+    print(f"Actor created with n_obs={n_obs}, n_act={n_act}")
     
     # Register learnable dimension weights parameter (COMMENTED OUT - not helping)
     # dim_weights_param = torch.nn.Parameter(torch.ones(n_act, device=device))
@@ -136,14 +172,14 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
     
     # Load trained weights
     if model_path is None:
-        # Find the latest model in the outputs directory (use absolute path)
+        # Prefer per-env best model path: outputs/<date>/saved_models_state_noise_v3/<env_id>/bc_model_actor_best.pt
         outputs_dir = Path(__file__).parent.parent / "outputs"
         if outputs_dir.exists():
-            model_dirs = list(outputs_dir.glob("*/saved_models_*/bc_model_actor_*"))
-            if model_dirs:
-                model_path = str(max(model_dirs, key=lambda p: p.stat().st_mtime))
-            else:
-                raise ValueError("No model files found in outputs directory")
+            best_candidates = list(
+                outputs_dir.glob(f"*/saved_models_state_noise_v3/{env_id}/bc_model_actor_best.pt")
+            )
+            if best_candidates:
+                model_path = str(max(best_candidates, key=lambda p: p.stat().st_mtime))
         else:
             raise ValueError(f"Outputs directory not found: {outputs_dir}")
     
@@ -160,7 +196,7 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
         param.requires_grad = False
 
     # Create a temporary env to get action bounds
-    temp_env = gym.make(env_id, obs_mode="state_dict", control_mode="pd_joint_delta_pos")
+    temp_env = gym.make(env_id, control_mode=cfg.env.get('control_mode'), obs_mode="state_dict")
     env_low = torch.from_numpy(temp_env.action_space.low).float()
     env_high = torch.from_numpy(temp_env.action_space.high).float()
     temp_env.close()
@@ -173,7 +209,6 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
     print(f"=" * 50)
     
     # Load offline dataset and check action bounds
-    from src.maniskill_utils.maniskill_dataloader_shabnam import DemoConfig, ManiSkillDemoLoader
     config = DemoConfig(device=torch.device("cpu"), filter_success_only=True)
     loader = ManiSkillDemoLoader(config, env_id)
     trajectories_for_bounds, _ = loader.load_demo_dataset(
@@ -218,7 +253,7 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
     action_diagnostics = []  # Track action statistics
 
     for ep in range(num_episodes):
-        env = make_eval_env(env_id, seed=ep, render=True)
+        env = make_eval_env(env_id, control_mode=cfg.env.get('control_mode'), seed=ep, render=True)
         obs, _ = env.reset()
         obs_tensor = torch.as_tensor(flatten_obs(obs), dtype=torch.float32, device=device)
 
@@ -235,9 +270,11 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
                 
                 # Sample action from the distribution (in [-1, 1] due to tanh transform)
                 normalized_action = pi.sample().squeeze(0).cpu().numpy()
+                # Denormalize using ENV bounds (policy was trained on env-normalized actions)
+                action = denormalize_action(normalized_action, env_low.numpy(), env_high.numpy())
                 
-                # Denormalize using DATASET bounds (policy was trained on dataset-normalized actions)
-                action = denormalize_action(normalized_action, dataset_low.numpy(), dataset_high.numpy())
+                # Actions should be within env bounds
+                action_clipped = np.clip(action, env_low.numpy(), env_high.numpy())
                 
                 # Clip to ENV bounds before feeding to environment
                 action_clipped = np.clip(action, env_low.numpy(), env_high.numpy())

@@ -4,7 +4,8 @@ import hydra
 import torch
 import torch.optim as optim
 import matplotlib.pyplot as plt
-from datetime import datetime
+import gymnasium as gym
+from datetime import datetime, time
 from tensordict import TensorDict
 from torch.amp import GradScaler
 from src.network_utils.torch_models import Actor
@@ -143,19 +144,19 @@ def main(cfg: OmegaConf):
     epoch_number = 0
 
     # Initilaize BC specific variables
-    EPOCHS = 200
+    EPOCHS = 100
     device = f'cuda:0' if torch.cuda.is_available() else 'cpu'
     best_vloss = 1_000_000
 
     # Load demo parameters from config
-    env_name = cfg.env.get('env_id') or cfg.env.name
+    env_name = cfg.env.name
     batch_size = cfg.env.demo.batch_size
     demo_path = cfg.env.demo.demo_path
     max_episodes = cfg.env.demo.max_episodes
     filter_success = cfg.env.demo.filter_success
 
     # Load demonstrations using config parameters
-    train_loader, val_loader, n_obs, n_act, low, high = load_demos_for_training(
+    train_loader, val_loader, n_obs, n_act, _, _ = load_demos_for_training(
         env_id=env_name,
         device=device,
         bsize=batch_size,
@@ -176,6 +177,13 @@ def main(cfg: OmegaConf):
         device=device,
     ).to(device)
 
+    # Get TRUE environment bounds, not dataset empirical bounds. The expert actions would be normalized from this space to [-1, 1] space.
+    temp_env = gym.make(env_name, obs_mode="state_dict", control_mode=cfg.env.get('control_mode'))
+    low = torch.from_numpy(temp_env.action_space.low).float().to(device)
+    high = torch.from_numpy(temp_env.action_space.high).float().to(device)
+    temp_env.close()
+    print(f"Using environment bounds for normalization: low={low.cpu().numpy()}, high={high.cpu().numpy()}")
+    
     # Learnable dimension weights for weighted loss
     # These will be learned during training to weight important dimensions (e.g., gripper)
     # Used in both NLL and MSE losses
@@ -201,6 +209,7 @@ def main(cfg: OmegaConf):
     print("Action std  per dim:", all_actions.std(dim=0))
     print("Mean action L2 norm:", all_actions.norm(dim=-1).mean().item())
     print("================================\n")
+    time = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     for epoch in range(EPOCHS):
         print(f'\nEPOCH {epoch_number + 1}/{EPOCHS}')
@@ -219,7 +228,7 @@ def main(cfg: OmegaConf):
             for i, vdata in enumerate(val_loader):
                 obs, expert_action = vdata['observations'], vdata['actions']
                 # Normalize actions to [-1, 1]
-                expert_action = 2.0 * (expert_action - low) / (high - low + 1e-6) - 1.0
+                expert_action = 2.0 * (expert_action - low) / (high - low) - 1.0
                 expert_action = torch.clamp(expert_action, -0.95, 0.95)
                 obs = obs.to(device)
                 expert_action = expert_action.to(device)
@@ -255,11 +264,11 @@ def main(cfg: OmegaConf):
         # Save best actor based on validation actor loss
         if avg_val_loss < best_vloss:
             best_vloss = avg_val_loss
-            if not os.path.exists('../saved_models_state_noise_v3'):
-                os.makedirs('../saved_models_state_noise_v3')
-            model_path = f'../saved_models_state_noise_v3/bc_model_actor_{timestamp}_{epoch_number}'
+            if not os.path.exists(f'../saved_models_state_noise/{env_name}/{time}'):
+                os.makedirs(f'../saved_models_state_noise/{env_name}/{time}')
+            model_path = f'../saved_models_state_noise/{env_name}/{time}/bc_model_actor_best.pt'
             torch.save(actor.state_dict(), model_path)
-            print(f'  ✓ Saved best actor model')
+            print(f'  ✓ Saved best actor model (val_loss={avg_val_loss:.4f})')
 
         epoch_number += 1
 
@@ -280,24 +289,21 @@ def main(cfg: OmegaConf):
     print(f"{'='*60}")
 
     # Save final loss plots
-    if not os.path.exists('bc_utils/loss_plots'):
-        os.makedirs('bc_utils/loss_plots')
+    if not os.path.exists(f'bc_utils/loss_plots/{env_name}'):
+        os.makedirs(f'bc_utils/loss_plots/{env_name}')
 
     # Plot actor losses
     plt.figure(figsize=(10, 5))
-    plt.plot(train_losses, label="Train Loss", color="blue")
-    plt.plot(val_losses, label="Val Loss", color="red")
+    plt.plot(train_losses, label=f"Train Loss for {env_name}", color="blue")
+    plt.plot(val_losses, label=f"Val Loss for {env_name}", color="red")
     plt.xlabel("Epoch")
     plt.ylabel("Actor Loss")
-    plt.title("Actor Loss Over Epochs")
     plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig("bc_utils/loss_plots/actor_loss.png")
+    plt.title(f'Losses for {env_name}')
+    plt.savefig(f'bc_utils/loss_plots/{env_name}/loss_plot.png')
     plt.close()
 
-    print(f"Saved loss plots to bc_utils/loss_plots/")
-
+    print(f"Saved loss plots to bc_utils/loss_plots/{env_name}/")
 
 if __name__ == "__main__":
     main()
