@@ -231,12 +231,12 @@ def make_loop_train_fn(
             # Actor
             jax_actor_dict = to_state_dict(state.actor.params)
             torch_actor_dict = jax_dict_to_torch(jax_actor_dict)
-            torch.save(torch_actor_dict, os.path.join(actor_checkpoint_dir, f'{env.spec.id}_actor_step_{int(state.iteration)}_v2.pth'))
+            torch.save(torch_actor_dict, os.path.join(actor_checkpoint_dir, f'{env.spec.id}_actor_step_{int(state.iteration)}_bc.pth'))
             
             # Critic
             jax_critic_dict = to_state_dict(state.critic.params)
             torch_critic_dict = jax_dict_to_torch(jax_critic_dict)
-            torch.save(torch_critic_dict, os.path.join(critic_checkpoint_dir, f'{env.spec.id}_critic_step_{int(state.iteration)}_v2.pth'))
+            torch.save(torch_critic_dict, os.path.join(critic_checkpoint_dir, f'{env.spec.id}_critic_step_{int(state.iteration)}_bc.pth'))
             
             log_callback(state, utils.prefix_dict("eval", eval_metrics))
         return state, {

@@ -12,7 +12,6 @@ from torch.utils.tensorboard import SummaryWriter
 from omegaconf import OmegaConf
 from src.maniskill_utils.maniskill_dataloader_shabnam import load_demos_for_training
 
-
 def denormalize_action(normalized_action, low, high):
     """
     Denormalize actions from [-1, 1] back to original action space [low, high].
@@ -139,11 +138,22 @@ writer = SummaryWriter('runs/fashion_trainer_{}'.format(timestamp))
 epoch_number = 0
 
 # Initilaize BC specific variables
+env_id = 'RollBall-v1'
+control_mode = "pd_joint_delta_pos"
 EPOCHS = 200
 batch_size = 64
 best_vloss = 1_000_000
 device = f'cuda:0' if torch.cuda.is_available() else 'cpu'
-train_loader, val_loader, n_obs, n_act, low, high = load_demos_for_training("PushCube-v1", device = device, filter_success=True)
+train_loader, val_loader, n_obs, n_act, _, _ = load_demos_for_training(env_id, demo_path = '/scratch/cluster/idutta/h5_files/RollBall/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5', device = device, filter_success=True)
+
+# Get TRUE environment bounds, not dataset empirical bounds. The expert actions would be normalized from this space to [-1, 1] space.
+import gymnasium as gym
+temp_env = gym.make(env_id, obs_mode="state_dict", control_mode=control_mode)
+low = torch.from_numpy(temp_env.action_space.low).float().to(device)
+high = torch.from_numpy(temp_env.action_space.high).float().to(device)
+temp_env.close()
+
+print(f"Using environment bounds for normalization: low={low.cpu().numpy()}, high={high.cpu().numpy()}")
 # print(n_obs, n_act)
 actor = Actor(
     n_obs=n_obs,
@@ -200,7 +210,7 @@ for epoch in range(EPOCHS):
         for i, vdata in enumerate(val_loader):
             obs, expert_action = vdata['observations'], vdata['actions']
             # Normalize actions to [-1, 1]
-            expert_action = 2.0 * (expert_action - low) / (high - low + 1e-6) - 1.0
+            expert_action = 2.0 * (expert_action - low) / (high - low) - 1.0
             expert_action = torch.clamp(expert_action, -0.95, 0.95)
             obs = obs.to(device)
             expert_action = expert_action.to(device)
@@ -236,9 +246,9 @@ for epoch in range(EPOCHS):
     # Save best actor based on validation actor loss
     if avg_val_loss < best_vloss:
         best_vloss = avg_val_loss
-        if not os.path.exists('../saved_models_state_noise_v3'):
-            os.makedirs('../saved_models_state_noise_v3')
-        model_path = f'../saved_models_state_noise_v3/bc_model_actor_{timestamp}_{epoch_number}'
+        if not os.path.exists(f'../saved_models_state_noise_v3/{env_id}'):
+            os.makedirs(f'../saved_models_state_noise_v3/{env_id}')
+        model_path = f'../saved_models_state_noise_v3/{env_id}/bc_model_actor_{timestamp}_{epoch_number}'
         torch.save(actor.state_dict(), model_path)
         print(f'  ✓ Saved best actor model')
 

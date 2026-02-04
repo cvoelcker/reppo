@@ -17,18 +17,18 @@ def denormalize_action(normalized_action, low, high):
     denormalized = (normalized_action + 1.0) * (high - low) / 2.0 + low
     return denormalized
 
-def make_eval_env(env_id, seed=0, render=True):
+def make_eval_env(env_id, control_mode, seed=0, render=True):
     env = gym.make(
         env_id,
         obs_mode="state_dict",          # MUST match training obs
-        control_mode="pd_joint_pos",
+        control_mode=control_mode,
         render_mode="rgb_array" if render else None,
         reward_mode = "normalized_dense" # Instead of just a sparse "success/fail" signal at the end, it gives normalized or scaled rewards (e.g., [−α, α] or [1−β, 1+β]) at each time step, indicating how well the agent is doing.
     )
     env.reset(seed=seed)
     return env
 
-def replay_expert_and_measure_mse(actor, dataset_low, dataset_high, env_low, env_high, demo_path="/scratch/cluster/idutta/h5_files/trajectory.rgb.pd_joint_pos.physx_cpu.h5", device='cpu'):
+def replay_expert_and_measure_mse(actor, env_id, dataset_low, dataset_high, env_low, env_high, demo_path="/scratch/cluster/idutta/h5_files/PushCube/trajectory.rgb.pd_joint_pos.physx_cpu.h5", device='cpu'):
     """
     Replay expert states from H5 file and measure MSE between policy and expert actions.
     Policy outputs are normalized by DATASET bounds, so denormalize using dataset bounds, then clip to env bounds.
@@ -38,7 +38,7 @@ def replay_expert_and_measure_mse(actor, dataset_low, dataset_high, env_low, env
     
     # Load expert demonstrations
     config = DemoConfig(device=torch.device("cpu"), filter_success_only=True)
-    loader = ManiSkillDemoLoader(config, 'PushCube-v1')
+    loader = ManiSkillDemoLoader(config, env_id)
     trajectories, metadata = loader.load_demo_dataset(demo_path)
     
     # Run the policy on the dataset to log stats and MSE
@@ -61,8 +61,8 @@ def replay_expert_and_measure_mse(actor, dataset_low, dataset_high, env_low, env
                 # Sample action from the distribution (in normalized [-1, 1] space)
                 sampled_action_normalized = pi.sample().squeeze(0).cpu().numpy()
                 
-                # Denormalize using DATASET bounds (policy was trained on dataset-normalized actions)
-                policy_action = denormalize_action(sampled_action_normalized, dataset_low.numpy(), dataset_high.numpy())
+                # Denormalize using ENV bounds (policy was trained on env-normalized actions)
+                policy_action = denormalize_action(sampled_action_normalized, env_low.numpy(), env_high.numpy())
                 
                 # Clip to ENV bounds before feeding to environment
                 policy_action = np.clip(policy_action, env_low.numpy(), env_high.numpy())
@@ -98,7 +98,7 @@ def flatten_obs(obs_dict):
                     obs_list.append(obs_dict[key][subkey].reshape(obs_dict[key][subkey].shape[0], -1))
     return np.concatenate(obs_list, axis=1)
 
-def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yaml",  model_path = "../reppo/bc_utils/bc_model_actor_20260127_195206_180.pth"):
+def test(env_id = 'PushCube-v1', control_mode = "pd_joint_pos", cfg_path = "../reppo/config/algorithm/reppo.yaml",  model_path = "../reppo/bc_utils/bc_model_actor_20260127_195206_180.pth", trajectory_path = "/scratch/cluster/idutta/h5_files/PushCube/trajectory.rgb.pd_joint_pos.physx_cpu.h5"):
     # Load config
     cfg = OmegaConf.load(cfg_path)
 
@@ -131,7 +131,7 @@ def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yam
         param.requires_grad = False
 
     # Create a temporary env to get action bounds
-    temp_env = gym.make(env_id, obs_mode="state_dict", control_mode="pd_joint_pos")
+    temp_env = gym.make(env_id, obs_mode="state_dict", control_mode=control_mode)
     env_low = torch.from_numpy(temp_env.action_space.low).float()
     env_high = torch.from_numpy(temp_env.action_space.high).float()
     temp_env.close()
@@ -148,7 +148,7 @@ def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yam
     config = DemoConfig(device=torch.device("cpu"), filter_success_only=True)
     loader = ManiSkillDemoLoader(config, env_id)
     trajectories_for_bounds, _ = loader.load_demo_dataset(
-        trajectory_path="/scratch/cluster/idutta/h5_files/trajectory.rgb.pd_joint_pos.physx_cpu.h5"
+        trajectory_path=trajectory_path
     )
     
     # Collect all actions from dataset
@@ -191,7 +191,7 @@ def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yam
     action_diagnostics = []  # Track action statistics
 
     for ep in range(num_episodes):
-        env = make_eval_env(env_id, seed=ep, render=True)
+        env = make_eval_env(env_id, control_mode, seed=ep, render=True)
         obs, _ = env.reset()
         obs_tensor = torch.as_tensor(flatten_obs(obs), dtype=torch.float32, device=device)
 
@@ -209,8 +209,11 @@ def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yam
                 # Sample action from the distribution (in [-1, 1] due to tanh transform)
                 normalized_action = pi.sample().squeeze(0).cpu().numpy()
                 
-                # Denormalize using DATASET bounds (policy was trained on dataset-normalized actions)
-                action = denormalize_action(normalized_action, dataset_low.numpy(), dataset_high.numpy())
+                # Denormalize using ENV bounds (policy was trained on env-normalized actions)
+                action = denormalize_action(normalized_action, env_low.numpy(), env_high.numpy())
+                
+                # Actions should be within env bounds
+                action_clipped = np.clip(action, env_low.numpy(), env_high.numpy())
                 
                 # Clip to ENV bounds before feeding to environment
                 action_clipped = np.clip(action, env_low.numpy(), env_high.numpy())
@@ -305,6 +308,6 @@ def test(env_id = 'PushCube-v1', cfg_path = "../reppo/config/algorithm/reppo.yam
     print(f"=" * 50)
     
     # Replay expert states and measure MSE
-    replay_expert_and_measure_mse(actor, dataset_low, dataset_high, env_low, env_high, device=device)
+    replay_expert_and_measure_mse(actor, env_id, dataset_low, dataset_high, env_low, env_high, device=device)
 
-test('PushCube-v1')
+test(env_id = 'RollBall-v1', control_mode = "pd_joint_delta_pos", model_path = "/scratch/cluster/idutta/saved_models_state_noise_v3/RollBall-v1/bc_model_actor_20260203_231914_86", trajectory_path = "/scratch/cluster/idutta/h5_files/RollBall/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5")

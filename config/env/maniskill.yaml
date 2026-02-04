@@ -13,7 +13,7 @@ capture_video: false
 save_train_video_freq: null
 render_mode: rgb_array
 env_kwargs:
-  obs_mode: state
+  obs_mode: state_dict
   sim_backend: physx_cuda
 vmin: -15
 vmax: 15

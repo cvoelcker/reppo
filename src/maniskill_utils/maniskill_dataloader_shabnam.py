@@ -194,7 +194,7 @@ class ManiSkillDemoLoader:
 
 def load_demos_for_training(env_id: str,
                             bsize: int = 64,
-                            demo_path: str = '/scratch/cluster/idutta/h5_files/trajectory.rgb.pd_joint_pos.physx_cpu.h5',
+                            demo_path: str = '/scratch/cluster/idutta/h5_files/PushCube/trajectory.rgb.pd_joint_pos.physx_cpu.h5',
                             device: torch.device = torch.device("cpu"),
                             max_episodes: Optional[int] = None,
                             filter_success: bool = True) -> TensorDict:
@@ -247,10 +247,10 @@ def load_demos_for_training(env_id: str,
     print(f"Created {len(train_loader)} and {len(val_loader)} dataset from {demo_path}")
     return train_loader, val_loader, obs_dim, act_dim, act_min, act_max
 
-result = load_demos_for_training("PushCube-v1", device=torch.device("cpu"), filter_success=True)
+# result = load_demos_for_training("RollBall-v1", demo_path="/scratch/cluster/idutta/h5_files/RollBall/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5", device=torch.device("cpu"), filter_success=True)
 
 # Create video from dataset observations (render pre-recorded RGB or state images)
-def render_trajectory_video(demo_path = '/scratch/cluster/idutta/h5_files/trajectory.rgb.pd_joint_pos.physx_cpu.h5', env_id = 'PushCube-v1', output_path = '/scratch/cluster/idutta/expert_videos', fps: int = 30):
+def render_trajectory_video(demo_path = '/scratch/cluster/idutta/h5_files/PushCube/trajectory.rgb.pd_joint_pos.physx_cpu.h5', env_id = 'PushCube-v1', output_path = '/scratch/cluster/idutta/expert_videos', fps: int = 30):
     """
     Render videos by rendering pre-recorded RGB observations from dataset.
     Uses RGB images directly from H5 file sensor_data structure.

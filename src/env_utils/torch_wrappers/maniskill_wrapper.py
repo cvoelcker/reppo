@@ -1,4 +1,4 @@
-from gymnasium import Wrapper
+from gymnasium import Wrapper, spaces
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -65,39 +65,37 @@ class ManiSkillWrapper(Wrapper):
 
     @property
     def observation_space(self):
-        return self.env.observation_space
+        # return self.env.observation_space
         """
         Returns the observation space of the environment.
         After filtering, observations are 25-dimensional.
         """
-        # from gymnasium import spaces
-        # # Return a 25-dim Box space (num_envs, 25)
-        # try:
-        #     num_envs = self.env.num_envs
-        # except AttributeError:
-        #     num_envs = 1
-        # return spaces.Box(
-        #     low=-np.inf,
-        #     high=np.inf,
-        #     shape=(num_envs, 25),
-        #     dtype=np.float32
-        # )
+        # Return a 25-dim Box space (num_envs, 25)
+        try:
+            num_envs = self.env.num_envs
+        except AttributeError:
+            num_envs = 1
+        return spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(num_envs, 25),
+            dtype=np.float32
+        )
 
     @property
     def single_observation_space(self):
-        return self.env.single_observation_space
+        # return self.env.single_observation_space
         """
         Returns the observation space of a single environment.
         After filtering, observations are 25-dimensional.
         """
-        # from gymnasium import spaces
-        # # Return a 25-dim Box space
-        # return spaces.Box(
-        #     low=-np.inf,
-        #     high=np.inf,
-        #     shape=(25,),
-        #     dtype=np.float32
-        # )
+        # Return a 25-dim Box space
+        return spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(25,),
+            dtype=np.float32
+        )
 
     @property
     def single_action_space(self):
