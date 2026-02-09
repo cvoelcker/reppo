@@ -94,41 +94,16 @@ def flatten_obs(obs_dict):
         if key in ['agent', 'extra']:
             subkeys = obs_dict[key].keys()
             for subkey in subkeys:
-                if subkey in ['qpos', 'qvel', 'tcp_pose']:
+                # This we have to change everytime we change the task
+                # print(subkey, obs_dict[key][subkey].shape)
+                # if subkey in ['qpos', 'qvel', 'tcp_pose', 'goal_pos', 'obj_pose']:  # 'ball_pose', 'ball_vel']: # goal_region of RollBall offline dataset => ['goal_pos', 'ball_pose', 'ball_vel']
                     obs_list.append(obs_dict[key][subkey].reshape(obs_dict[key][subkey].shape[0], -1))
     return np.concatenate(obs_list, axis=1)
 
 def test(env_id = 'PushCube-v1', control_mode = "pd_joint_pos", cfg_path = "../reppo/config/algorithm/reppo.yaml",  model_path = "../reppo/bc_utils/bc_model_actor_20260127_195206_180.pth", trajectory_path = "/scratch/cluster/idutta/h5_files/PushCube/trajectory.rgb.pd_joint_pos.physx_cpu.h5"):
     # Load config
     cfg = OmegaConf.load(cfg_path)
-
-    # Load actor
-    device = f'cuda:0' if torch.cuda.is_available() else 'cpu'
-    n_obs = 25
-    n_act = 8
-    actor = Actor(
-        n_obs=n_obs,
-        n_act=n_act,
-        ent_start=cfg.ent_start,
-        kl_start=cfg.kl_start,
-        hidden_dim=cfg.actor_hidden_dim,
-        use_norm=cfg.use_actor_norm,
-        layers=cfg.num_actor_layers,
-        min_std=cfg.actor_min_std,
-        device=device,
-    )
-    
-    # Register learnable dimension weights parameter (COMMENTED OUT - not helping)
-    # dim_weights_param = torch.nn.Parameter(torch.ones(n_act, device=device))
-    # actor.register_parameter('dim_weights', dim_weights_param)
-    
-    # Load trained weights
-    actor.load_state_dict(torch.load(model_path, map_location=device))
-    actor.eval()
-    
-    # Stop gradients for all parameters during evaluation
-    for param in actor.parameters():
-        param.requires_grad = False
+    # print(env_id, control_mode, model_path, trajectory_path)
 
     # Create a temporary env to get action bounds
     temp_env = gym.make(env_id, obs_mode="state_dict", control_mode=control_mode)
@@ -150,6 +125,31 @@ def test(env_id = 'PushCube-v1', control_mode = "pd_joint_pos", cfg_path = "../r
     trajectories_for_bounds, _ = loader.load_demo_dataset(
         trajectory_path=trajectory_path
     )
+    n_obs = trajectories_for_bounds[0]['observations'].shape[1]
+    n_act = trajectories_for_bounds[0]['actions'].shape[1]
+    print(f"Observation dimension from dataset: {n_obs}, Action dimension from dataset: {n_act}")
+
+    # Load actor
+    device = f'cuda:0' if torch.cuda.is_available() else 'cpu'
+    actor = Actor(
+        n_obs=n_obs,
+        n_act=n_act,
+        ent_start=cfg.ent_start,
+        kl_start=cfg.kl_start,
+        hidden_dim=cfg.actor_hidden_dim,
+        use_norm=cfg.use_actor_norm,
+        layers=cfg.num_actor_layers,
+        min_std=cfg.actor_min_std,
+        device=device,
+    )
+
+    # Load trained weights
+    actor.load_state_dict(torch.load(model_path, map_location=device))
+    actor.eval()
+
+    # Stop gradients for all parameters during evaluation
+    for param in actor.parameters():
+        param.requires_grad = False
     
     # Collect all actions from dataset
     all_dataset_actions = torch.cat([traj['actions'] for traj in trajectories_for_bounds], dim=0)
@@ -179,7 +179,7 @@ def test(env_id = 'PushCube-v1', control_mode = "pd_joint_pos", cfg_path = "../r
     # define configs
     num_episodes=300
     max_steps=1000
-    parent_dir = "./bc_utils/eval_videos_state_noise_v4_large"
+    parent_dir = f"../eval_videos/"
     if not os.path.exists(parent_dir):
         os.mkdir(parent_dir)
     save_dir = os.path.join(parent_dir, env_id.split('-')[0])
@@ -310,4 +310,4 @@ def test(env_id = 'PushCube-v1', control_mode = "pd_joint_pos", cfg_path = "../r
     # Replay expert states and measure MSE
     replay_expert_and_measure_mse(actor, env_id, dataset_low, dataset_high, env_low, env_high, device=device)
 
-test(env_id = 'RollBall-v1', control_mode = "pd_joint_delta_pos", model_path = "/scratch/cluster/idutta/saved_models_state_noise_v3/RollBall-v1/bc_model_actor_20260203_231914_86", trajectory_path = "/scratch/cluster/idutta/h5_files/RollBall/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5")
+test(env_id = 'PickCube-v1', control_mode = "pd_joint_delta_pos", model_path = "/scratch/cluster/idutta/saved_models_state_goal/PickCube-v1/bc_model_actor_20260208_202704_99", trajectory_path = "/scratch/cluster/idutta/h5_files/PickCube/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5")

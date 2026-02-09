@@ -138,13 +138,14 @@ writer = SummaryWriter('runs/fashion_trainer_{}'.format(timestamp))
 epoch_number = 0
 
 # Initilaize BC specific variables
-env_id = 'RollBall-v1'
+env_id = 'PickCube-v1'
 control_mode = "pd_joint_delta_pos"
+demo_path = '/scratch/cluster/idutta/h5_files/PickCube/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5'
 EPOCHS = 200
 batch_size = 64
 best_vloss = 1_000_000
 device = f'cuda:0' if torch.cuda.is_available() else 'cpu'
-train_loader, val_loader, n_obs, n_act, _, _ = load_demos_for_training(env_id, demo_path = '/scratch/cluster/idutta/h5_files/RollBall/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5', device = device, filter_success=True)
+train_loader, val_loader, n_obs, n_act = load_demos_for_training(env_id, demo_path = demo_path, device = device, filter_success=True)
 
 # Get TRUE environment bounds, not dataset empirical bounds. The expert actions would be normalized from this space to [-1, 1] space.
 import gymnasium as gym
@@ -246,9 +247,9 @@ for epoch in range(EPOCHS):
     # Save best actor based on validation actor loss
     if avg_val_loss < best_vloss:
         best_vloss = avg_val_loss
-        if not os.path.exists(f'../saved_models_state_noise_v3/{env_id}'):
-            os.makedirs(f'../saved_models_state_noise_v3/{env_id}')
-        model_path = f'../saved_models_state_noise_v3/{env_id}/bc_model_actor_{timestamp}_{epoch_number}'
+        if not os.path.exists(f'../saved_models_state_goal/{env_id}'):
+            os.makedirs(f'../saved_models_state_goal/{env_id}')
+        model_path = f'../saved_models_state_goal/{env_id}/bc_model_actor_{timestamp}_{epoch_number}'
         torch.save(actor.state_dict(), model_path)
         print(f'  ✓ Saved best actor model')
 
@@ -271,8 +272,8 @@ print(f"Training Complete! Best validation loss: {best_vloss:.4f}")
 print(f"{'='*60}")
 
 # Save final loss plots
-if not os.path.exists('bc_utils/loss_plots'):
-    os.makedirs('bc_utils/loss_plots')
+if not os.path.exists(f'../saved_models_state_goal/{env_id}/loss_plots'):
+    os.makedirs(f'../saved_models_state_goal/{env_id}/loss_plots')
 
 # Plot actor losses
 plt.figure(figsize=(10, 5))
@@ -284,7 +285,7 @@ plt.title("Actor Loss Over Epochs")
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig("bc_utils/loss_plots/actor_loss.png")
+plt.savefig(f"../saved_models_state_goal/{env_id}/loss_plots/actor_loss.png")
 plt.close()
 
-print(f"Saved loss plots to bc_utils/loss_plots/")
+print(f"Saved loss plots to ../saved_models_state_goal/{env_id}/loss_plots/")

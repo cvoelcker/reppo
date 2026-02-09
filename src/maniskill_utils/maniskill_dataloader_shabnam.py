@@ -97,6 +97,12 @@ class ManiSkillDemoLoader:
         else:
             return None
 
+        # Extract the goal from the env_states/actors/goal_region
+        if 'env_states' in traj_group:
+            for key in traj_group['env_states']['actors'].keys():
+                if 'goal' in key:
+                    goal_region = traj_group['env_states']['actors'][key][:]
+
         # Load rewards
         if "rewards" in traj_group and traj_group["rewards"] is not None:
             rewards = np.array(traj_group["rewards"])
@@ -120,6 +126,10 @@ class ManiSkillDemoLoader:
         rew = rewards[:cut_idx]
         term = terminated[:cut_idx]
         trunc = truncated[:cut_idx]
+        goal_region = goal_region[:cut_idx]
+
+        # Concatenate goal region along observation feature dimension
+        obs = np.concatenate([obs, goal_region], axis=1)
 
         if len(obs) < 2:
             return None
@@ -237,17 +247,18 @@ def load_demos_for_training(env_id: str,
         batch_size=bsize,
         shuffle=False,
         drop_last=False)
-    obs_dim = trajectories[0]["observations"].shape[1]  # 25 for non flattened
-    act_dim = trajectories[0]["actions"].shape[1]  # 8 for non flattened
+    obs_dim = trajectories[0]["observations"].shape[1]  # n_obs for non flattened
+    act_dim = trajectories[0]["actions"].shape[1]  # n_act for non flattened
+    print(f"Observation dimension: {obs_dim}, Action dimension: {act_dim}")
     # find min and max action values
     # actions = trajectories["actions"]   # shape [N, 8]
-    actions = torch.cat([td["actions"] for td in trajectories], dim=0) # for non flattened
-    act_min = actions.min(dim=0).values   # [8]
-    act_max = actions.max(dim=0).values   # [8]
+    # actions = torch.cat([td["actions"] for td in trajectories], dim=0) # for non flattened
+    # act_min = actions.min(dim=0).values   # [8]
+    # act_max = actions.max(dim=0).values   # [8]
     print(f"Created {len(train_loader)} and {len(val_loader)} dataset from {demo_path}")
-    return train_loader, val_loader, obs_dim, act_dim, act_min, act_max
+    return train_loader, val_loader, obs_dim, act_dim # , None, None
 
-# result = load_demos_for_training("RollBall-v1", demo_path="/scratch/cluster/idutta/h5_files/RollBall/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5", device=torch.device("cpu"), filter_success=True)
+# result = load_demos_for_training("PushCube-v1", demo_path="/scratch/cluster/idutta/h5_files/PushCube/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5", device=torch.device("cpu"), filter_success=True)
 
 # Create video from dataset observations (render pre-recorded RGB or state images)
 def render_trajectory_video(demo_path = '/scratch/cluster/idutta/h5_files/PushCube/trajectory.rgb.pd_joint_pos.physx_cpu.h5', env_id = 'PushCube-v1', output_path = '/scratch/cluster/idutta/expert_videos', fps: int = 30):
@@ -323,7 +334,6 @@ def render_trajectory_video(demo_path = '/scratch/cluster/idutta/h5_files/PushCu
 # Reason:
 # - In vanilla BC, the policy is trained to map observations coming from the expert distribution π to actions.
 # - During execution, the policy sees states from its own trajectory distribution θ, which may differ slightly.
-# - Small errors compound: a tiny deviation in one step moves the state out of the expert distribution. Without having seen these "near-miss" states, the next predicted action may be wrong, causing a catastrophic spiral away from the expert trajectory.
 
 # Mathematical formulation:
 # - Vanilla BC loss: L(θ) = E_(s,a)~D [-log π_θ(a|s)]
@@ -338,12 +348,3 @@ def render_trajectory_video(demo_path = '/scratch/cluster/idutta/h5_files/PushCu
 # - The second term penalizes high curvature in the log-probability surface.
 # - Intuitively, it forces the policy to be smooth: small deviations in state (drifts) do not drastically reduce the probability of taking the correct expert action.
 # - Mathematically, the optimizer minimizes both the loss and the local gradients of π_θ(s), effectively reducing the Lipschitz constant of the policy and increasing robustness.
-
-# Adding noise smoothens the policy but does not solve the compounding error problem entirely. As it creates a local bound around the expert states, that still does not help once the policy sees states it has never seen before rather the states that are outside the local bound of this noise.
-# This problem once startes accumulating can compound over time. 
-# There is one more problem, the std of the policy is 0.01 - 0.05 which is very loss which is causing the policy to become determininstic and not explore bad options. The policy is getting biased a towards ction dimensions with this std value
-# Action mean per dim: [-1.1850e-03,  5.9062e-01,  4.3090e-04, -1.9659e+00, -7.7145e-04, 2.5577e+00,  7.8363e-01, -9.9997e-01]
-# Action std  per dim: [0.0668, 0.1995, 0.0240, 0.2744, 0.0302, 0.1747, 0.0909, 0.0042]
-# Mean action L2 norm: 3.532094717025757 and Predicted action L2 norm ~ 2.2
-# Added a regularizer using the log std to make the policy more stochastic and increase the min_std parameter. Also added an auxiliary MSE loss between the expert action means and the means of the multivariate distribution, in addition to the NLL loss.
-# This caused the rewards to increase but the actions became way too large and unstable.
