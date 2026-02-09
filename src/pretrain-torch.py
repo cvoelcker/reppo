@@ -144,7 +144,7 @@ def main(cfg: OmegaConf):
     epoch_number = 0
 
     # Initilaize BC specific variables
-    EPOCHS = 100
+    EPOCHS = 128
     device = f'cuda:0' if torch.cuda.is_available() else 'cpu'
     best_vloss = 1_000_000
 
@@ -264,11 +264,11 @@ def main(cfg: OmegaConf):
         # Save best actor based on validation actor loss
         if avg_val_loss < best_vloss:
             best_vloss = avg_val_loss
-            if not os.path.exists(f'../saved_models_state_noise/{env_name}/{time}'):
-                os.makedirs(f'../saved_models_state_noise/{env_name}/{time}')
-            model_path = f'../saved_models_state_noise/{env_name}/{time}/bc_model_actor_best.pt'
+            model_dir = f'{env_name}/saved_models/{timestamp}'
+            os.makedirs(model_dir, exist_ok=True)
+            model_path = f'{model_dir}/bc_model_actor_best.pt'
             torch.save(actor.state_dict(), model_path)
-            print(f'  ✓ Saved best actor model (val_loss={avg_val_loss:.4f})')
+            print(f'  ✓ Saved best actor model to {model_path} (val_loss={avg_val_loss:.4f})')
 
         epoch_number += 1
 
@@ -289,9 +289,9 @@ def main(cfg: OmegaConf):
     print(f"{'='*60}")
 
     # Save final loss plots
-    if not os.path.exists(f'bc_utils/loss_plots/{env_name}'):
-        os.makedirs(f'bc_utils/loss_plots/{env_name}')
-
+    plot_dir = f'{env_name}/loss_plots/{timestamp}'
+    os.makedirs(plot_dir, exist_ok=True)
+    
     # Plot actor losses
     plt.figure(figsize=(10, 5))
     plt.plot(train_losses, label=f"Train Loss for {env_name}", color="blue")
@@ -300,10 +300,11 @@ def main(cfg: OmegaConf):
     plt.ylabel("Actor Loss")
     plt.legend()
     plt.title(f'Losses for {env_name}')
-    plt.savefig(f'bc_utils/loss_plots/{env_name}/loss_plot.png')
+    plot_path = f'{plot_dir}/loss_plot.png'
+    plt.savefig(plot_path)
     plt.close()
 
-    print(f"Saved loss plots to bc_utils/loss_plots/{env_name}/")
+    print(f"Saved loss plots to {plot_path}")
 
 if __name__ == "__main__":
     main()

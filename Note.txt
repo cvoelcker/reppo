@@ -1,45 +1,29 @@
-rgb temp:
-uv run python -m mani_skill.trajectory.replay_trajectory   --traj-path /home/tajiksh1/.maniskill/demos/PullCube-v1/rl/trajectory.none.pd_joint_delta_pos.physx_cuda.h5   --record-rewards --reward-mode="normalized_dense" -o rgb   --use-env-states   --save-traj
+COMMANDS
+
+-rgb replay:
+  uv run python -m mani_skill.trajectory.replay_trajectory   --traj-path /home/tajiksh1/.maniskill/demos/PullCube-v1/rl/trajectory.none.pd_joint_delta_pos.physx_cuda.h5   --record-rewards --reward-mode="normalized_dense" -o rgb   --use-env-states   --save-traj
+
+-Plot_path:
+  outputs/{date}/{timestamp}/{env_name}/loss_plot/loss_plot.png
+
+-model_path:
+  outputs/{date}/{timestamp}/{env_name}/saved_model/bc_model_actor_best.pt
 
 PushCube-v1:
-uv run src/pretrain-torch.py env.name=PushCube-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/PushCube-v1/motionplanning/trajectory.rgb.pd_joint_pos.physx_cpu.h5" env.control_mode="pd_joint_pos" 2>&1
-uv run src/test_bc.py env.name=PushCube-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/PushCube-v1/motionplanning/trajectory.rgb.pd_joint_pos.physx_cpu.h5" +model_path="/home/tajiksh1/reppo/outputs/2026-02-04/saved_models_state_noise/PushCube-v1/1/bc_model_actor_best.pt" env.control_mode="pd_joint_pos"
+  uv run src/pretrain-torch.py env.name=PushCube-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/PushCube-v1/motionplanning/trajectory.rgb.pd_joint_pos.physx_cpu.h5" env.control_mode="pd_joint_pos" 2>&1
+  uv run src/test_bc.py env.name=PushCube-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/PushCube-v1/motionplanning/trajectory.rgb.pd_joint_pos.physx_cpu.h5" +model_path="" env.control_mode="pd_joint_pos"
 
 
 PickCube-v1:
-uv run src/pretrain-torch.py env.name=PickCube-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/PickCube-v1/motionplanning/trajectory.rgb.pd_joint_pos.physx_cpu.h5" env.control_mode="pd_joint_pos" 2>&1
-uv run src/test_bc.py env.name=PickCube-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/PickCube-v1/motionplanning/trajectory.rgb.pd_joint_pos.physx_cpu.h5" +model_path="/home/tajiksh1/reppo/outputs/2026-02-04/saved_models_state_noise/PickCube-v1/20260204_080126/bc_model_actor_best.pt" env.control_mode="pd_joint_pos"
+  uv run src/pretrain-torch.py env.name=PickCube-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/PickCube-v1/motionplanning/trajectory.rgb.pd_joint_pos.physx_cpu.h5" env.control_mode="pd_joint_pos" 2>&1
+  uv run src/test_bc.py env.name=PickCube-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/PickCube-v1/motionplanning/trajectory.rgb.pd_joint_pos.physx_cpu.h5" +model_path="" env.control_mode="pd_joint_pos"
 
-Plot_path:
-/home/tajiksh1/reppo/outputs/2026-02-04/08-01-24/bc_utils/loss_plots/PickCube-v1/loss_plot.png
-
-Error:
-  The model is hardcoded with n_obs = 25, but the checkpoint file was saved with a different observation dimension (29).
-  I did change hardcoded number to env variable but
-  the demo observations have 29 dimensions, but the environment observation has 42 dimensions
-  the demo file only includes:
-    agent.qpos: 9
-    agent.qvel: 9
-    extra.goal_pos: 3
-    extra.is_grasped: 1
-    extra.tcp_pose: 7
-    Total: 29 dimensions
-
-    But the current environment also returns:
-
-    extra.obj_pose: 7
-    extra.obj_to_goal_pos: 3
-    extra.tcp_to_obj_pos: 3
 
 RollBall-v1:
-uv run src/pretrain-torch.py env.name=RollBall-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/RollBall-v1/rl/trajectory.rgb.pd_joint_delta_pos.physx_cuda.h5" env.control_mode="pd_joint_delta_pos"
-uv run src/test_bc.py env.name=RollBall-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/RollBall-v1/rl/trajectory.rgb.pd_joint_delta_pos.physx_cuda.h5" +model_path="/home/tajiksh1/reppo/outputs/2026-02-04/saved_models_state_noise/RollBall-v1/20260204_075408/bc_model_actor_best.pt" env.control_mode="pd_joint_delta_pos"
-
+  uv run src/pretrain-torch.py env.name=RollBall-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/RollBall-v1/rl/trajectory.rgb.pd_joint_delta_pos.physx_cuda.h5" env.control_mode="pd_joint_delta_pos"
+  uv run src/test_bc.py env.name=RollBall-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/RollBall-v1/rl/trajectory.rgb.pd_joint_delta_pos.physx_cuda.h5" +model_path="" env.control_mode="pd_joint_delta_pos"
 
 
 PullCube-v1:
-uv run src/pretrain-torch.py env.name=PullCube-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/PullCube-v1/rl/trajectory.rgb.pd_joint_delta_pos.physx_cuda.h5" env.control_mode="pd_joint_delta_pos" 2>&1
-uv run src/test_bc.py env.name=PullCube-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/PullCube-v1/rl/trajectory.rgb.pd_joint_delta_pos.physx_cuda.h5" +model_path="/home/tajiksh1/reppo/outputs/2026-02-04/saved_models_state_noise/PullCube-v1/20260204_082337/bc_model_actor_best.pt" env.control_mode="pd_joint_delta_pos"
-
-Plot_path:
-/home/tajiksh1/reppo/outputs/2026-02-04/08-23-35/bc_utils/loss_plots/PullCube-v1/loss_plot.png
+  uv run src/pretrain-torch.py env.name=PullCube-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/PullCube-v1/rl/trajectory.rgb.pd_joint_delta_pos.physx_cuda.h5" env.control_mode="pd_joint_delta_pos" 2>&1
+  uv run src/test_bc.py env.name=PullCube-v1 env.demo.demo_path="/home/tajiksh1/.maniskill/demos/PullCube-v1/rl/trajectory.rgb.pd_joint_delta_pos.physx_cuda.h5" +model_path="" env.control_mode="pd_joint_delta_pos"

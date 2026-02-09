@@ -15,8 +15,17 @@ from src.maniskill_utils.maniskill_dataloader_shabnam import DemoConfig, ManiSki
 def denormalize_action(normalized_action, low, high):
     """
     Denormalize actions from [-1, 1] back to original action space [low, high].
+    Only denormalizes if the action space is not already [-1, 1].
     This is the inverse of: normalized = 2.0 * (action - low) / (high - low) - 1.0
     """
+    # Check if action space is already [-1, 1] (like pd_joint_delta_pos)
+    low_is_minus_one = np.allclose(low, -1.0, atol=1e-4)
+    high_is_one = np.allclose(high, 1.0, atol=1e-4)
+    
+    if low_is_minus_one and high_is_one:
+        # Actions are already in [-1, 1], no denormalization needed
+        return normalized_action
+    
     # Inverse formula: action = (normalized + 1.0) * (high - low) / 2.0 + low
     denormalized = (normalized_action + 1.0) * (high - low) / 2.0 + low
     return denormalized
@@ -27,7 +36,8 @@ def make_eval_env(env_id, control_mode="pd_joint_pos", seed=0, render=True):
         obs_mode="state_dict",          # MUST match training obs
         control_mode=control_mode,
         render_mode="rgb_array" if render else None,
-        reward_mode = "normalized_dense" # Instead of just a sparse "success/fail" signal at the end, it gives normalized or scaled rewards (e.g., [−α, α] or [1−β, 1+β]) at each time step, indicating how well the agent is doing.
+        reward_mode = "normalized_dense", # Instead of just a sparse "success/fail" signal at the end, it gives normalized or scaled rewards (e.g., [−α, α] or [1−β, 1+β]) at each time step, indicating how well the agent is doing.
+        max_episode_steps=100
     )
     env.reset(seed=seed)
     return env
@@ -88,17 +98,33 @@ def replay_expert_and_measure_mse(actor, dataset_low, dataset_high, env_low, env
         print(f"Std ratio (policy/expert): {policy_action_std_overall / (expert_action_std_overall + 1e-6):.2f}x")
         print(f"=" * 50)
 
-def flatten_obs(obs_dict):
+def get_demo_obs_keys(demo_path):
+    """Extract which observation keys are actually in the demo file."""
+    import h5py
+    
+    with h5py.File(demo_path, 'r') as f:
+        traj_group = f['traj_0']
+        obs_group = traj_group['obs']
+        
+        demo_keys = {'agent': [], 'extra': []}
+        for key in sorted(obs_group.keys()):
+            if key in ('agent', 'extra'):
+                sub_group = obs_group[key]
+                if hasattr(sub_group, 'keys'):
+                    demo_keys[key] = sorted(sub_group.keys())
+        
+        return demo_keys
+
+def flatten_obs(obs_dict, env, demo_obs_keys):
     # Flatten the observation dictionary to match the demo data format
-    # Demo includes: agent.qpos, agent.qvel, extra.goal_pos, extra.is_grasped, extra.tcp_pose
-    # (Does NOT include: extra.obj_pose, extra.obj_to_goal_pos, extra.tcp_to_obj_pos)
+    # Only include keys that were actually in the demo file
     obs_list = []
     for key in sorted(obs_dict.keys()):
-        if key in ('agent', 'extra'):
+        if key in ('agent', 'extra') and key in demo_obs_keys:
             sub_group = obs_dict[key]
             for sub_key in sorted(sub_group.keys()):
                 # Only include keys that were in the demo
-                if key == 'agent' and sub_key in ['qpos', 'qvel']:
+                if sub_key in demo_obs_keys[key]:
                     data = sub_group[sub_key]
                     if isinstance(data, np.ndarray):
                         data_flat = data.reshape(data.shape[0], -1) if len(data.shape) > 1 else data.reshape(1, -1)
@@ -106,20 +132,19 @@ def flatten_obs(obs_dict):
                         data_array = np.asarray(data)
                         data_flat = data_array.reshape(1, -1) if data_array.ndim == 1 else data_array.reshape(data_array.shape[0], -1)
                     obs_list.append(data_flat)
-                elif key == 'extra' and sub_key in ['goal_pos', 'is_grasped', 'tcp_pose']:
-                    data = sub_group[sub_key]
-                    if isinstance(data, np.ndarray):
-                        if len(data.shape) == 1:
-                            data_flat = data.reshape(1, -1)
-                        else:
-                            data_flat = data.reshape(data.shape[0], -1)
-                    else:
-                        data_array = np.asarray(data)
-                        if data_array.ndim == 1:
-                            data_flat = data_array.reshape(1, -1)
-                        else:
-                            data_flat = data_array.reshape(data_array.shape[0], -1)
-                    obs_list.append(data_flat)
+    
+    # Add env_states/actors data
+    if hasattr(env.unwrapped, 'get_state_dict'):
+        state = env.unwrapped.get_state_dict()
+        if 'actors' in state:
+            for actor_name in sorted(state['actors'].keys()):
+                actor_data = state['actors'][actor_name]
+                if isinstance(actor_data, np.ndarray):
+                    data_flat = actor_data.reshape(actor_data.shape[0], -1) if len(actor_data.shape) > 1 else actor_data.reshape(1, -1)
+                else:
+                    data_array = np.asarray(actor_data.cpu()) if hasattr(actor_data, 'cpu') else np.asarray(actor_data)
+                    data_flat = data_array.reshape(1, -1) if data_array.ndim == 1 else data_array.reshape(data_array.shape[0], -1)
+                obs_list.append(data_flat)
     
     if not obs_list:
         raise ValueError(f"No observation data found in obs_dict with keys: {obs_dict.keys()}")
@@ -141,6 +166,10 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
     
     env_id = cfg.env.name
     demo_path = cfg.env.demo.demo_path
+
+    # Get demo observation keys to know which fields to extract
+    demo_obs_keys = get_demo_obs_keys(demo_path)
+    print(f"Demo observation keys: {demo_obs_keys}")
 
     # Load actor
     device = f'cuda:0' if torch.cuda.is_available() else 'cpu'
@@ -242,7 +271,7 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
 
     # define configs
     num_episodes=20
-    max_steps=1000
+    max_steps=100
     parent_dir = Path(__file__).parent.parent / "bc_utils" / "eval_videos_state_noise_v4_large"
     parent_dir.mkdir(parents=True, exist_ok=True)
     save_dir = parent_dir / env_id.split('-')[0]
@@ -255,7 +284,7 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
     for ep in range(num_episodes):
         env = make_eval_env(env_id, control_mode=cfg.env.get('control_mode'), seed=ep, render=True)
         obs, _ = env.reset()
-        obs_tensor = torch.as_tensor(flatten_obs(obs), dtype=torch.float32, device=device)
+        obs_tensor = torch.as_tensor(flatten_obs(obs, env, demo_obs_keys), dtype=torch.float32, device=device)
 
         frames = []
         ep_reward = 0.0
@@ -313,7 +342,7 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
             if terminated or truncated:
                 break
             
-            obs_tensor = torch.as_tensor(flatten_obs(obs), dtype=torch.float32, device=device)
+            obs_tensor = torch.as_tensor(flatten_obs(obs, env, demo_obs_keys), dtype=torch.float32, device=device)
 
         # save video
         video_path = str(save_dir / f"ep_{ep:03d}.mp4")

@@ -93,7 +93,7 @@ class ManiSkillDemoLoader:
 
         # Load observations
         if 'obs' in traj_group:
-            observations = self._load_observations(traj_group['obs'])
+            observations = self._load_observations(traj_group['obs'], traj_group)
         else:
             return None
 
@@ -144,7 +144,7 @@ class ManiSkillDemoLoader:
         return td.unsqueeze(0)
 
 
-    def _load_observations(self, obs_group: h5py.Group) -> np.ndarray:
+    def _load_observations(self, obs_group: h5py.Group, traj_group: h5py.Group = None) -> np.ndarray:
         # modified BC
         noise_std = 0.02     # standard deviation of Gaussian noise
         noise_indices = None # indices of observation dimensions to add noise to
@@ -160,13 +160,30 @@ class ManiSkillDemoLoader:
             if key in ('agent', 'extra'):
                 # print(key, sub_group.keys())
                 for sub_key in sorted(sub_group.keys()):
-                    data = np.array(sub_group[sub_key])
-                    data_flat = data.reshape(data.shape[0], -1)
-                    # mark agent columns for noise
-                    if key == 'agent':
+                    # Include all agent and extra fields (no filtering)
+                    if key == 'agent' and sub_key in ['qpos', 'qvel']:
+                        data = np.array(sub_group[sub_key])
+                        data_flat = data.reshape(data.shape[0], -1)
+                        # mark agent columns for noise
                         robot_indices.extend(range(col_offset, col_offset + data_flat.shape[1]))
+                        col_offset += data_flat.shape[1]
+                        obs_data.append(data_flat)
+                    elif key == 'extra':
+                        # Include ALL extra fields
+                        data = np.array(sub_group[sub_key])
+                        data_flat = data.reshape(data.shape[0], -1)
+                        col_offset += data_flat.shape[1]
+                        obs_data.append(data_flat)
+        
+        # Load env_states/actors data if available
+        if traj_group is not None and 'env_states' in traj_group:
+            env_states = traj_group['env_states']
+            if 'actors' in env_states:
+                actors_group = env_states['actors']
+                for actor_key in sorted(actors_group.keys()):
+                    data = np.array(actors_group[actor_key])
+                    data_flat = data.reshape(data.shape[0], -1)
                     col_offset += data_flat.shape[1]
-
                     obs_data.append(data_flat)
 
         obs_data = np.concatenate(obs_data, axis=1)
