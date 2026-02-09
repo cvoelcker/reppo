@@ -31,7 +31,7 @@ def make_eval_env(env_id, control_mode, seed=0, render=True):
 def replay_expert_and_measure_mse(actor, env_id, dataset_low, dataset_high, env_low, env_high, demo_path="/scratch/cluster/idutta/h5_files/PushCube/trajectory.rgb.pd_joint_pos.physx_cpu.h5", device='cpu'):
     """
     Replay expert states from H5 file and measure MSE between policy and expert actions.
-    Policy outputs are normalized by DATASET bounds, so denormalize using dataset bounds, then clip to env bounds.
+    Both policy and expert actions are normalized to [-1, 1] for fair comparison.
     """
     import h5py
     from src.maniskill_utils.maniskill_dataloader_shabnam import DemoConfig, ManiSkillDemoLoader
@@ -43,48 +43,53 @@ def replay_expert_and_measure_mse(actor, env_id, dataset_low, dataset_high, env_
     
     # Run the policy on the dataset to log stats and MSE
     for traj_idx, traj in enumerate(trajectories[:3]):  # Sample first 3 trajectories
-        obs = traj['observations']  # [T, 25]
-        expert_actions = traj['actions']  # [T, 8]
+        obs = traj['observations']  # [T, n_obs]
+        expert_actions = traj['actions']  # [T, n_act] - raw unnormalized actions
         mse_list = []
         policy_action_list = []
+        expert_action_normalized_list = []
         
         # Compute overall expert action std across entire trajectory (not per timestep)
         expert_action_std_overall = expert_actions.std(dim=0).mean().item()
         
         for t in range(len(obs)):
-            obs_t = obs[t:t+1].to(device)  # [1, 25]
-            expert_action_t = expert_actions[t:t+1].to(device)  # [1, 8]
+            obs_t = obs[t:t+1].to(device)  # [1, n_obs]
+            expert_action_t = expert_actions[t:t+1].to(device)  # [1, n_act] - raw action
             
             with torch.no_grad():
                 pi, tanh_mean, _, _, log_std, mean = actor(obs_t)
                 
-                # Sample action from the distribution (in normalized [-1, 1] space)
+                # Sample action from the distribution (in [-1, 1] space)
                 sampled_action_normalized = pi.sample().squeeze(0).cpu().numpy()
                 
-                # Denormalize using ENV bounds (policy was trained on env-normalized actions)
-                policy_action = denormalize_action(sampled_action_normalized, env_low.numpy(), env_high.numpy())
-                
-                # Clip to ENV bounds before feeding to environment
-                policy_action = np.clip(policy_action, env_low.numpy(), env_high.numpy())
+                # Normalize expert action from dataset bounds to [-1, 1]
+                expert_action_np = expert_action_t.squeeze(0).cpu().numpy()
+                expert_action_normalized = 2.0 * (expert_action_np - dataset_low.numpy()) / (dataset_high.numpy() - dataset_low.numpy()) - 1.0
+                expert_action_normalized = np.clip(expert_action_normalized, -1.0, 1.0)
                 
                 # Store for std computation
-                policy_action_list.append(policy_action)
+                policy_action_list.append(sampled_action_normalized)
+                expert_action_normalized_list.append(expert_action_normalized)
                 
-                # MSE between policy and expert
-                mse = np.mean((policy_action - expert_action_t.squeeze(0).cpu().numpy())**2)
+                # MSE between policy and expert in [-1, 1] space
+                mse = np.mean((sampled_action_normalized - expert_action_normalized)**2)
                 mse_list.append(mse)
         
-        # Compute std of sampled policy actions across trajectory
+        # Compute std of policy actions across trajectory (in normalized space)
         policy_action_array = np.array(policy_action_list)
         policy_action_std_overall = policy_action_array.std(axis=0).mean() if len(policy_action_list) > 1 else 0.0
         
+        # Compute std of expert actions across trajectory (in normalized space)
+        expert_action_normalized_array = np.array(expert_action_normalized_list)
+        expert_action_normalized_std = expert_action_normalized_array.std(axis=0).mean() if len(expert_action_normalized_list) > 1 else 0.0
+        
         # Print stats per trajectory
-        print(f"\n=== TRAJECTORY {traj_idx} EXPERT REPLAY MSE ===")
+        print(f"\n=== TRAJECTORY {traj_idx} EXPERT REPLAY MSE ([-1, 1] space) ===")
         print(f"Mean MSE (policy vs expert actions): {np.mean(mse_list):.4f}")
         print(f"Std MSE: {np.std(mse_list):.4f}")
         print(f"Policy action std (sampled): {policy_action_std_overall:.4f}")
-        print(f"Expert action std: {expert_action_std_overall:.4f}")
-        print(f"Std ratio (policy/expert): {policy_action_std_overall / (expert_action_std_overall + 1e-6):.2f}x")
+        print(f"Expert action std (normalized): {expert_action_normalized_std:.4f}")
+        print(f"Std ratio (policy/expert): {policy_action_std_overall / (expert_action_normalized_std + 1e-6):.2f}x")
         print(f"=" * 50)
 
 def flatten_obs(obs_dict):
@@ -209,13 +214,15 @@ def test(env_id = 'PushCube-v1', control_mode = "pd_joint_pos", cfg_path = "../r
                 # Sample action from the distribution (in [-1, 1] due to tanh transform)
                 normalized_action = pi.sample().squeeze(0).cpu().numpy()
                 
-                # Denormalize using ENV bounds (policy was trained on env-normalized actions)
-                action = denormalize_action(normalized_action, env_low.numpy(), env_high.numpy())
+                # Denormalize from [-1, 1] to env bounds if env bounds are not [-1, 1]
+                if np.allclose(env_low.numpy(), -1.0) and np.allclose(env_high.numpy(), 1.0):
+                    # Env bounds are [-1, 1], use actor output directly
+                    action = normalized_action
+                else:
+                    # Env bounds are different, denormalize from [-1, 1] to [env_low, env_high]
+                    action = denormalize_action(normalized_action, env_low.numpy(), env_high.numpy())
                 
                 # Actions should be within env bounds
-                action_clipped = np.clip(action, env_low.numpy(), env_high.numpy())
-                
-                # Clip to ENV bounds before feeding to environment
                 action_clipped = np.clip(action, env_low.numpy(), env_high.numpy())
                 out_of_bounds = not np.allclose(action, action_clipped)
                 if out_of_bounds:
@@ -310,4 +317,4 @@ def test(env_id = 'PushCube-v1', control_mode = "pd_joint_pos", cfg_path = "../r
     # Replay expert states and measure MSE
     replay_expert_and_measure_mse(actor, env_id, dataset_low, dataset_high, env_low, env_high, device=device)
 
-test(env_id = 'PickCube-v1', control_mode = "pd_joint_delta_pos", model_path = "/scratch/cluster/idutta/saved_models_state_goal/PickCube-v1/bc_model_actor_20260208_202704_99", trajectory_path = "/scratch/cluster/idutta/h5_files/PickCube/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5")
+test(env_id = 'PickCube-v1', control_mode = "pd_joint_delta_pos", model_path = "/scratch/cluster/idutta/saved_models_state_goal/PickCube-v1/bc_model_actor_20260208_213552_75", trajectory_path = "/scratch/cluster/idutta/h5_files/PickCube/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5")

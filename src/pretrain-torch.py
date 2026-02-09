@@ -12,13 +12,6 @@ from torch.utils.tensorboard import SummaryWriter
 from omegaconf import OmegaConf
 from src.maniskill_utils.maniskill_dataloader_shabnam import load_demos_for_training
 
-def denormalize_action(normalized_action, low, high):
-    """
-    Denormalize actions from [-1, 1] back to original action space [low, high].
-    """
-    denormalized = (normalized_action + 1.0) * (high - low) / 2.0 + low
-    return denormalized
-
 def train_one_epoch(epoch_index, tb_writer, low, high, actor):
     """Train one epoch and return actor loss plus diagnostic metrics."""
     actor_loss_sum = 0.0
@@ -38,12 +31,14 @@ def train_one_epoch(epoch_index, tb_writer, low, high, actor):
         expert_action, obs = expert_action.to(device), obs.to(device)
         num_batches += 1
         
-        # Track original expert action statistics BEFORE normalization
+        # Normalize raw actions from environment bounds to [-1, 1]
+        expert_action = 2.0 * (expert_action - low) / (high - low) - 1.0
+        
+        # Track original expert action statistics (before clamping)
         original_expert_action_std = expert_action.std(dim=0).mean().item()
         denorm_expert_action_std_sum += original_expert_action_std
 
-        # Normalize actions to [-1, 1]
-        expert_action = 2.0 * (expert_action - low) / (high - low) - 1.0
+        # Clamp normalized actions for numerical stability
         expert_action = torch.clamp(expert_action, -0.95, 0.95)
         
         # Track normalized expert action std
@@ -210,8 +205,9 @@ for epoch in range(EPOCHS):
     with torch.no_grad():
         for i, vdata in enumerate(val_loader):
             obs, expert_action = vdata['observations'], vdata['actions']
-            # Normalize actions to [-1, 1]
+            # Normalize raw actions from environment bounds to [-1, 1]
             expert_action = 2.0 * (expert_action - low) / (high - low) - 1.0
+            # Clamp normalized actions for numerical stability
             expert_action = torch.clamp(expert_action, -0.95, 0.95)
             obs = obs.to(device)
             expert_action = expert_action.to(device)

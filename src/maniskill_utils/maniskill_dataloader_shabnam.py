@@ -57,6 +57,9 @@ class ManiSkillDemoLoader:
 
     def _load_trajectories(self, trajectory_path: Path, metadata: Dict) -> TensorDict:
         all_trajectories = []
+        
+        # Load raw trajectories without normalization
+        # Normalization happens in training script using environment bounds
         with h5py.File(trajectory_path, 'r') as f:
             traj_keys = [key for key in f.keys() if key.startswith('traj_')]
             for traj_key in traj_keys:
@@ -84,6 +87,8 @@ class ManiSkillDemoLoader:
 
     def _convert_trajectory(self, traj_group: h5py.Group, episode_metadata: Dict) -> Optional[TensorDict]:
         actions = np.array(traj_group['actions'])
+        # Load raw unnormalized actions - normalization happens in training script
+        
         terminated = np.array(traj_group['terminated'])
         truncated = np.array(traj_group['truncated'])
         T = len(actions)
