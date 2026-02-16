@@ -262,7 +262,7 @@ def load_demos_for_training(env_id: str,
     act_min = actions.min(dim=0).values   # [8]
     act_max = actions.max(dim=0).values   # [8]
     print(f"Created {len(train_loader)} and {len(val_loader)} dataset from {demo_path}")
-    return train_loader, val_loader, obs_dim, act_dim, act_min, act_max
+    return train_loader, val_loader, obs_dim, act_dim
 
 # result = load_demos_for_training("PushCube-v1", device=torch.device("cpu"), filter_success=True)
 

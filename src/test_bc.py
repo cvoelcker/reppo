@@ -4,10 +4,10 @@ import mani_skill.envs
 import gymnasium as gym
 import imageio
 import numpy as np
+import hydra
 from omegaconf import OmegaConf
 from collections import defaultdict
 from src.network_utils.torch_models import Actor
-import hydra
 from pathlib import Path
 import h5py
 from src.maniskill_utils.maniskill_dataloader_shabnam import DemoConfig, ManiSkillDemoLoader
@@ -152,48 +152,51 @@ def flatten_obs(obs_dict, env, demo_obs_keys):
     result = np.concatenate(obs_list, axis=1)
     return result
 
-def test(cfg, env_id=None, model_path=None, demo_path=None):
-    # Use cfg from Hydra if provided, otherwise load it
-    if cfg is None:
-        config_path = Path(__file__).parent.parent / "config" / "default" / "reppo_maniskill.yaml"
-        cfg = OmegaConf.load(str(config_path))
-    
-    # Override env_id and demo_path if provided
-    if env_id:
-        cfg.env.name = env_id
-    if demo_path:
-        cfg.env.demo.demo_path = demo_path
-    
-    env_id = cfg.env.name
-    demo_path = cfg.env.demo.demo_path
+def test(env_id = 'PushCube-v1', control_mode = "pd_joint_pos", cfg_path = "../reppo/config/algorithm/reppo.yaml",  model_path = "../reppo/bc_utils/bc_model_actor_20260127_195206_180.pth", trajectory_path = "/scratch/cluster/idutta/h5_files/PushCube/trajectory.rgb.pd_joint_pos.physx_cpu.h5"):
+    # Load config
+    cfg = OmegaConf.load(cfg_path)
+    # print(env_id, control_mode, model_path, trajectory_path)
 
     # Get demo observation keys to know which fields to extract
-    demo_obs_keys = get_demo_obs_keys(demo_path)
+    demo_obs_keys = get_demo_obs_keys(trajectory_path)
     print(f"Demo observation keys: {demo_obs_keys}")
+
+    # Create a temporary env to get action bounds
+    temp_env = gym.make(env_id, obs_mode="state_dict", control_mode=control_mode)
+    env_low = torch.from_numpy(temp_env.action_space.low).float()
+    env_high = torch.from_numpy(temp_env.action_space.high).float()
+    temp_env.close()
+    
+    print(f"\n=== ENV ACTION SPACE INFO ===")
+    print(f"Action bounds - Low: {env_low.numpy()}")
+    print(f"Action bounds - High: {env_high.numpy()}")
+    print(f"Action space range: {(env_high - env_low).numpy()}")
+    print(f"Action space center: {((env_high + env_low) / 2).numpy()}")
+    print(f"=" * 50)
+    
+    # Load offline dataset and check action bounds
+    config = DemoConfig(device=torch.device("cpu"), filter_success_only=True)
+    loader = ManiSkillDemoLoader(config, env_id)
+    trajectories_for_bounds, _ = loader.load_demo_dataset(
+        trajectory_path=trajectory_path
+    )
+    n_obs = trajectories_for_bounds[0]['observations'].shape[1]
+    n_act = trajectories_for_bounds[0]['actions'].shape[1]
+    print(f"Observation dimension from dataset: {n_obs}, Action dimension from dataset: {n_act}")
 
     # Load actor
     device = f'cuda:0' if torch.cuda.is_available() else 'cpu'
-    
-    # Dynamically determine observation and action dimensions from demo data
-    from src.maniskill_utils.maniskill_dataloader_shabnam import DemoConfig, ManiSkillDemoLoader
-    config = DemoConfig(device=torch.device("cpu"), filter_success_only=True)
-    loader = ManiSkillDemoLoader(config, env_id)
-    trajectories_for_dims, _ = loader.load_demo_dataset(demo_path)
-    n_obs = trajectories_for_dims[0]["observations"].shape[1]
-    n_act = trajectories_for_dims[0]["actions"].shape[1]
-    
     actor = Actor(
         n_obs=n_obs,
         n_act=n_act,
-        ent_start=cfg.algorithm.ent_start,
-        kl_start=cfg.algorithm.kl_start,
-        hidden_dim=cfg.algorithm.actor_hidden_dim,
-        use_norm=cfg.algorithm.use_actor_norm,
-        layers=cfg.algorithm.num_actor_layers,
-        min_std=cfg.algorithm.actor_min_std,
+        ent_start=cfg.ent_start,
+        kl_start=cfg.kl_start,
+        hidden_dim=cfg.actor_hidden_dim,
+        use_norm=cfg.use_actor_norm,
+        layers=cfg.num_actor_layers,
+        min_std=cfg.actor_min_std,
         device=device,
     )
-    print(f"Actor created with n_obs={n_obs}, n_act={n_act}")
     
     # Register learnable dimension weights parameter (COMMENTED OUT - not helping)
     # dim_weights_param = torch.nn.Parameter(torch.ones(n_act, device=device))
@@ -225,7 +228,7 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
         param.requires_grad = False
 
     # Create a temporary env to get action bounds
-    temp_env = gym.make(env_id, control_mode=cfg.env.get('control_mode'), obs_mode="state_dict")
+    temp_env = gym.make(env_id, control_mode=control_mode, obs_mode="state_dict")
     env_low = torch.from_numpy(temp_env.action_space.low).float()
     env_high = torch.from_numpy(temp_env.action_space.high).float()
     temp_env.close()
@@ -241,7 +244,7 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
     config = DemoConfig(device=torch.device("cpu"), filter_success_only=True)
     loader = ManiSkillDemoLoader(config, env_id)
     trajectories_for_bounds, _ = loader.load_demo_dataset(
-        trajectory_path=cfg.env.demo.demo_path
+        trajectory_path=trajectory_path
     )
     
     # Collect all actions from dataset
@@ -270,9 +273,9 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
     print(f"=" * 50)
 
     # define configs
-    num_episodes=20
+    num_episodes=50
     max_steps=100
-    parent_dir = Path(__file__).parent.parent / "bc_utils" / "eval_videos_state_noise_v4_large"
+    parent_dir = Path("../eval_videos_v2")
     parent_dir.mkdir(parents=True, exist_ok=True)
     save_dir = parent_dir / env_id.split('-')[0]
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -282,7 +285,7 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
     action_diagnostics = []  # Track action statistics
 
     for ep in range(num_episodes):
-        env = make_eval_env(env_id, control_mode=cfg.env.get('control_mode'), seed=ep, render=True)
+        env = make_eval_env(env_id, control_mode=control_mode, seed=ep, render=True)
         obs, _ = env.reset()
         obs_tensor = torch.as_tensor(flatten_obs(obs, env, demo_obs_keys), dtype=torch.float32, device=device)
 
@@ -405,16 +408,15 @@ def test(cfg, env_id=None, model_path=None, demo_path=None):
         env_low,
         env_high,
         env_id,
-        demo_path,
+        trajectory_path,
         device=device,
     )
 
-@hydra.main(version_base=None, config_path="../config/default", config_name="reppo_maniskill")
-def main(cfg):
-    OmegaConf.set_struct(cfg, False)
-    # Accept model_path from config if provided, otherwise None to auto-detect
-    model_path = OmegaConf.select(cfg, "model_path")
-    test(cfg=cfg, env_id=None, model_path=model_path, demo_path=cfg.env.demo.demo_path)
-
-if __name__ == "__main__":
-    main()
+# Call test function with default parameters
+test(
+    env_id='RollBall-v1',
+    control_mode="pd_joint_delta_pos",
+    cfg_path="../reppo/config/algorithm/reppo.yaml",
+    model_path="/scratch/cluster/idutta/saved_models_state_goal/RollBall-v1/bc_model_actor_20260215_220947_73",
+    trajectory_path="/scratch/cluster/idutta/h5_files/RollBall/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5"
+)
