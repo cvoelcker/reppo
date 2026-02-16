@@ -57,9 +57,6 @@ class ManiSkillDemoLoader:
 
     def _load_trajectories(self, trajectory_path: Path, metadata: Dict) -> TensorDict:
         all_trajectories = []
-        
-        # Load raw trajectories without normalization
-        # Normalization happens in training script using environment bounds
         with h5py.File(trajectory_path, 'r') as f:
             traj_keys = [key for key in f.keys() if key.startswith('traj_')]
             for traj_key in traj_keys:
@@ -87,8 +84,6 @@ class ManiSkillDemoLoader:
 
     def _convert_trajectory(self, traj_group: h5py.Group, episode_metadata: Dict) -> Optional[TensorDict]:
         actions = np.array(traj_group['actions'])
-        # Load raw unnormalized actions - normalization happens in training script
-        
         terminated = np.array(traj_group['terminated'])
         truncated = np.array(traj_group['truncated'])
         T = len(actions)
@@ -98,15 +93,9 @@ class ManiSkillDemoLoader:
 
         # Load observations
         if 'obs' in traj_group:
-            observations = self._load_observations(traj_group['obs'])
+            observations = self._load_observations(traj_group['obs'], traj_group)
         else:
             return None
-
-        # Extract the goal from the env_states/actors/goal_region
-        if 'env_states' in traj_group:
-            for key in traj_group['env_states']['actors'].keys():
-                if 'goal' in key:
-                    goal_region = traj_group['env_states']['actors'][key][:]
 
         # Load rewards
         if "rewards" in traj_group and traj_group["rewards"] is not None:
@@ -131,10 +120,6 @@ class ManiSkillDemoLoader:
         rew = rewards[:cut_idx]
         term = terminated[:cut_idx]
         trunc = truncated[:cut_idx]
-        goal_region = goal_region[:cut_idx]
-
-        # Concatenate goal region along observation feature dimension
-        obs = np.concatenate([obs, goal_region], axis=1)
 
         if len(obs) < 2:
             return None
@@ -159,7 +144,7 @@ class ManiSkillDemoLoader:
         return td.unsqueeze(0)
 
 
-    def _load_observations(self, obs_group: h5py.Group) -> np.ndarray:
+    def _load_observations(self, obs_group: h5py.Group, traj_group: h5py.Group = None) -> np.ndarray:
         # modified BC
         noise_std = 0.02     # standard deviation of Gaussian noise
         noise_indices = None # indices of observation dimensions to add noise to
@@ -175,13 +160,30 @@ class ManiSkillDemoLoader:
             if key in ('agent', 'extra'):
                 # print(key, sub_group.keys())
                 for sub_key in sorted(sub_group.keys()):
-                    data = np.array(sub_group[sub_key])
-                    data_flat = data.reshape(data.shape[0], -1)
-                    # mark agent columns for noise
-                    if key == 'agent':
+                    # Include all agent and extra fields (no filtering)
+                    if key == 'agent' and sub_key in ['qpos', 'qvel']:
+                        data = np.array(sub_group[sub_key])
+                        data_flat = data.reshape(data.shape[0], -1)
+                        # mark agent columns for noise
                         robot_indices.extend(range(col_offset, col_offset + data_flat.shape[1]))
+                        col_offset += data_flat.shape[1]
+                        obs_data.append(data_flat)
+                    elif key == 'extra':
+                        # Include ALL extra fields
+                        data = np.array(sub_group[sub_key])
+                        data_flat = data.reshape(data.shape[0], -1)
+                        col_offset += data_flat.shape[1]
+                        obs_data.append(data_flat)
+        
+        # Load env_states/actors data if available
+        if traj_group is not None and 'env_states' in traj_group:
+            env_states = traj_group['env_states']
+            if 'actors' in env_states:
+                actors_group = env_states['actors']
+                for actor_key in sorted(actors_group.keys()):
+                    data = np.array(actors_group[actor_key])
+                    data_flat = data.reshape(data.shape[0], -1)
                     col_offset += data_flat.shape[1]
-
                     obs_data.append(data_flat)
 
         obs_data = np.concatenate(obs_data, axis=1)
@@ -209,7 +211,7 @@ class ManiSkillDemoLoader:
 
 def load_demos_for_training(env_id: str,
                             bsize: int = 64,
-                            demo_path: str = '/scratch/cluster/idutta/h5_files/PushCube/trajectory.rgb.pd_joint_pos.physx_cpu.h5',
+                            demo_path: str = '/scratch/cluster/idutta/h5_files/trajectory.rgb.pd_joint_pos.physx_cpu.h5',
                             device: torch.device = torch.device("cpu"),
                             max_episodes: Optional[int] = None,
                             filter_success: bool = True) -> TensorDict:
@@ -252,21 +254,20 @@ def load_demos_for_training(env_id: str,
         batch_size=bsize,
         shuffle=False,
         drop_last=False)
-    obs_dim = trajectories[0]["observations"].shape[1]  # n_obs for non flattened
-    act_dim = trajectories[0]["actions"].shape[1]  # n_act for non flattened
-    print(f"Observation dimension: {obs_dim}, Action dimension: {act_dim}")
+    obs_dim = trajectories[0]["observations"].shape[1]  # 25 for non flattened
+    act_dim = trajectories[0]["actions"].shape[1]  # 8 for non flattened
     # find min and max action values
     # actions = trajectories["actions"]   # shape [N, 8]
-    # actions = torch.cat([td["actions"] for td in trajectories], dim=0) # for non flattened
-    # act_min = actions.min(dim=0).values   # [8]
-    # act_max = actions.max(dim=0).values   # [8]
+    actions = torch.cat([td["actions"] for td in trajectories], dim=0) # for non flattened
+    act_min = actions.min(dim=0).values   # [8]
+    act_max = actions.max(dim=0).values   # [8]
     print(f"Created {len(train_loader)} and {len(val_loader)} dataset from {demo_path}")
-    return train_loader, val_loader, obs_dim, act_dim # , None, None
+    return train_loader, val_loader, obs_dim, act_dim, act_min, act_max
 
-# result = load_demos_for_training("PushCube-v1", demo_path="/scratch/cluster/idutta/h5_files/PushCube/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5", device=torch.device("cpu"), filter_success=True)
+# result = load_demos_for_training("PushCube-v1", device=torch.device("cpu"), filter_success=True)
 
 # Create video from dataset observations (render pre-recorded RGB or state images)
-def render_trajectory_video(demo_path = '/scratch/cluster/idutta/h5_files/PushCube/trajectory.rgb.pd_joint_pos.physx_cpu.h5', env_id = 'PushCube-v1', output_path = '/scratch/cluster/idutta/expert_videos', fps: int = 30):
+def render_trajectory_video(demo_path = '/scratch/cluster/idutta/h5_files/trajectory.rgb.pd_joint_pos.physx_cpu.h5', env_id = 'PushCube-v1', output_path = '/scratch/cluster/idutta/expert_videos', fps: int = 30):
     """
     Render videos by rendering pre-recorded RGB observations from dataset.
     Uses RGB images directly from H5 file sensor_data structure.
@@ -339,6 +340,7 @@ def render_trajectory_video(demo_path = '/scratch/cluster/idutta/h5_files/PushCu
 # Reason:
 # - In vanilla BC, the policy is trained to map observations coming from the expert distribution π to actions.
 # - During execution, the policy sees states from its own trajectory distribution θ, which may differ slightly.
+# - Small errors compound: a tiny deviation in one step moves the state out of the expert distribution. Without having seen these "near-miss" states, the next predicted action may be wrong, causing a catastrophic spiral away from the expert trajectory.
 
 # Mathematical formulation:
 # - Vanilla BC loss: L(θ) = E_(s,a)~D [-log π_θ(a|s)]
@@ -353,3 +355,12 @@ def render_trajectory_video(demo_path = '/scratch/cluster/idutta/h5_files/PushCu
 # - The second term penalizes high curvature in the log-probability surface.
 # - Intuitively, it forces the policy to be smooth: small deviations in state (drifts) do not drastically reduce the probability of taking the correct expert action.
 # - Mathematically, the optimizer minimizes both the loss and the local gradients of π_θ(s), effectively reducing the Lipschitz constant of the policy and increasing robustness.
+
+# Adding noise smoothens the policy but does not solve the compounding error problem entirely. As it creates a local bound around the expert states, that still does not help once the policy sees states it has never seen before rather the states that are outside the local bound of this noise.
+# This problem once startes accumulating can compound over time. 
+# There is one more problem, the std of the policy is 0.01 - 0.05 which is very loss which is causing the policy to become determininstic and not explore bad options. The policy is getting biased a towards ction dimensions with this std value
+# Action mean per dim: [-1.1850e-03,  5.9062e-01,  4.3090e-04, -1.9659e+00, -7.7145e-04, 2.5577e+00,  7.8363e-01, -9.9997e-01]
+# Action std  per dim: [0.0668, 0.1995, 0.0240, 0.2744, 0.0302, 0.1747, 0.0909, 0.0042]
+# Mean action L2 norm: 3.532094717025757 and Predicted action L2 norm ~ 2.2
+# Added a regularizer using the log std to make the policy more stochastic and increase the min_std parameter. Also added an auxiliary MSE loss between the expert action means and the means of the multivariate distribution, in addition to the NLL loss.
+# This caused the rewards to increase but the actions became way too large and unstable.

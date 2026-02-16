@@ -4,13 +4,22 @@ import hydra
 import torch
 import torch.optim as optim
 import matplotlib.pyplot as plt
-from datetime import datetime
+import gymnasium as gym
+from datetime import datetime, time
 from tensordict import TensorDict
 from torch.amp import GradScaler
 from src.network_utils.torch_models import Actor
 from torch.utils.tensorboard import SummaryWriter
 from omegaconf import OmegaConf
 from src.maniskill_utils.maniskill_dataloader_shabnam import load_demos_for_training
+
+
+def denormalize_action(normalized_action, low, high):
+    """
+    Denormalize actions from [-1, 1] back to original action space [low, high].
+    """
+    denormalized = (normalized_action + 1.0) * (high - low) / 2.0 + low
+    return denormalized
 
 def train_one_epoch(epoch_index, tb_writer, low, high, actor):
     """Train one epoch and return actor loss plus diagnostic metrics."""
@@ -31,14 +40,12 @@ def train_one_epoch(epoch_index, tb_writer, low, high, actor):
         expert_action, obs = expert_action.to(device), obs.to(device)
         num_batches += 1
         
-        # Normalize raw actions from environment bounds to [-1, 1]
-        expert_action = 2.0 * (expert_action - low) / (high - low) - 1.0
-        
-        # Track original expert action statistics (before clamping)
+        # Track original expert action statistics BEFORE normalization
         original_expert_action_std = expert_action.std(dim=0).mean().item()
         denorm_expert_action_std_sum += original_expert_action_std
 
-        # Clamp normalized actions for numerical stability
+        # Normalize actions to [-1, 1]
+        expert_action = 2.0 * (expert_action - low) / (high - low) - 1.0
         expert_action = torch.clamp(expert_action, -0.95, 0.95)
         
         # Track normalized expert action std
@@ -123,165 +130,181 @@ def train_one_epoch(epoch_index, tb_writer, low, high, actor):
         avg_denorm_expert_std
     )
 
-# Load config
-cfg_path = "../reppo/config/algorithm/reppo.yaml"
-cfg = OmegaConf.load(cfg_path)
+@hydra.main(version_base=None, config_path="../config/default", config_name="reppo_maniskill")
+def main(cfg: OmegaConf):
+    """Main training function."""
+    # Disable struct mode to allow CLI overrides
+    OmegaConf.set_struct(cfg, False)
+    
+    global device, train_loader, val_loader, optimizer
+    
+    # Initializing in a separate cell so we can easily add more epochs to the same run
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    writer = SummaryWriter('runs/fashion_trainer_{}'.format(timestamp))
+    epoch_number = 0
 
-# Initializing in a separate cell so we can easily add more epochs to the same run
-timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-writer = SummaryWriter('runs/fashion_trainer_{}'.format(timestamp))
-epoch_number = 0
+    # Initilaize BC specific variables
+    EPOCHS = 128
+    device = f'cuda:0' if torch.cuda.is_available() else 'cpu'
+    best_vloss = 1_000_000
 
-# Initilaize BC specific variables
-env_id = 'PickCube-v1'
-control_mode = "pd_joint_delta_pos"
-demo_path = '/scratch/cluster/idutta/h5_files/PickCube/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5'
-EPOCHS = 200
-batch_size = 64
-best_vloss = 1_000_000
-device = f'cuda:0' if torch.cuda.is_available() else 'cpu'
-train_loader, val_loader, n_obs, n_act = load_demos_for_training(env_id, demo_path = demo_path, device = device, filter_success=True)
+    # Load demo parameters from config
+    env_name = cfg.env.name
+    batch_size = cfg.env.demo.batch_size
+    demo_path = cfg.env.demo.demo_path
+    max_episodes = cfg.env.demo.max_episodes
+    filter_success = cfg.env.demo.filter_success
 
-# Get TRUE environment bounds, not dataset empirical bounds. The expert actions would be normalized from this space to [-1, 1] space.
-import gymnasium as gym
-temp_env = gym.make(env_id, obs_mode="state_dict", control_mode=control_mode)
-low = torch.from_numpy(temp_env.action_space.low).float().to(device)
-high = torch.from_numpy(temp_env.action_space.high).float().to(device)
-temp_env.close()
-
-print(f"Using environment bounds for normalization: low={low.cpu().numpy()}, high={high.cpu().numpy()}")
-# print(n_obs, n_act)
-actor = Actor(
-    n_obs=n_obs,
-    n_act=n_act,
-    ent_start=cfg.ent_start,
-    kl_start=cfg.kl_start,
-    hidden_dim=cfg.actor_hidden_dim,
-    use_norm=cfg.use_actor_norm,
-    layers=cfg.num_actor_layers,
-    min_std=cfg.actor_min_std,
-    device=device,
-).to(device)
-
-# Learnable dimension weights for weighted loss
-# These will be learned during training to weight important dimensions (e.g., gripper)
-# Used in both NLL and MSE losses
-# dim_weights_param = torch.nn.Parameter(torch.ones(n_act, device=device))
-# actor.register_parameter('dim_weights', dim_weights_param)
-
-optimizer = optim.AdamW(
-        list(actor.parameters()),
-        lr=float(cfg.optimizer.learning_rate)
+    # Load demonstrations using config parameters
+    train_loader, val_loader, n_obs, n_act, _, _ = load_demos_for_training(
+        env_id=env_name,
+        device=device,
+        bsize=batch_size,
+        demo_path=demo_path,
+        max_episodes=max_episodes,
+        filter_success=filter_success
     )
-scaler = GradScaler()
-train_losses = []
-val_losses = []
+    # print(n_obs, n_act)
+    actor = Actor(
+        n_obs=n_obs,
+        n_act=n_act,
+        ent_start=cfg.algorithm.ent_start,
+        kl_start=cfg.algorithm.kl_start,
+        hidden_dim=cfg.algorithm.actor_hidden_dim,
+        use_norm=cfg.algorithm.use_actor_norm,
+        layers=cfg.algorithm.num_actor_layers,
+        min_std=cfg.algorithm.actor_min_std,
+        device=device,
+    ).to(device)
 
-# Check dataset action stats
-all_actions = torch.cat(
-    [batch["actions"] for batch in train_loader],
-    dim=0
-)
+    # Get TRUE environment bounds, not dataset empirical bounds. The expert actions would be normalized from this space to [-1, 1] space.
+    temp_env = gym.make(env_name, obs_mode="state_dict", control_mode=cfg.env.get('control_mode'))
+    low = torch.from_numpy(temp_env.action_space.low).float().to(device)
+    high = torch.from_numpy(temp_env.action_space.high).float().to(device)
+    temp_env.close()
+    print(f"Using environment bounds for normalization: low={low.cpu().numpy()}, high={high.cpu().numpy()}")
+    
+    # Learnable dimension weights for weighted loss
+    # These will be learned during training to weight important dimensions (e.g., gripper)
+    # Used in both NLL and MSE losses
+    # dim_weights_param = torch.nn.Parameter(torch.ones(n_act, device=device))
+    # actor.register_parameter('dim_weights', dim_weights_param)
 
-print("\n=== DATASET ACTION STATS ===")
-print("Action mean per dim:", all_actions.mean(dim=0))
-print("Action std  per dim:", all_actions.std(dim=0))
-print("Mean action L2 norm:", all_actions.norm(dim=-1).mean().item())
-print("================================\n")
+    optimizer = optim.AdamW(
+            list(actor.parameters()),
+            lr=float(cfg.algorithm.optimizer.learning_rate)
+        )
+    scaler = GradScaler()
+    train_losses = []
+    val_losses = []
 
-for epoch in range(EPOCHS):
-    print(f'\nEPOCH {epoch_number + 1}/{EPOCHS}')
-
-    # ===== TRAINING PHASE =====
-    actor.train()
-    avg_actor_loss, avg_policy_std, avg_mean_action_norm_pre, avg_mean_action_norm_post, avg_action_std_post_tanh, avg_action_l2_error, avg_expert_std, avg_denorm_expert_std = train_one_epoch(epoch_number, writer, low, high, actor)
-    train_losses.append(avg_actor_loss)
-
-    # ===== VALIDATION PHASE =====
-    actor.eval()
-    val_loss_sum = 0.0
-    val_num_batches = 0
-
-    with torch.no_grad():
-        for i, vdata in enumerate(val_loader):
-            obs, expert_action = vdata['observations'], vdata['actions']
-            # Normalize raw actions from environment bounds to [-1, 1]
-            expert_action = 2.0 * (expert_action - low) / (high - low) - 1.0
-            # Clamp normalized actions for numerical stability
-            expert_action = torch.clamp(expert_action, -0.95, 0.95)
-            obs = obs.to(device)
-            expert_action = expert_action.to(device)
-            val_num_batches += 1
-            
-            # ===== ACTOR LOSS =====
-            dist, tanh_mean, _, _, log_std, _ = actor(obs)
-            log_prob = dist.log_prob(expert_action)
-            
-            # NLL: Maximum likelihood estimation
-            nll_loss = -log_prob.sum(dim=-1).mean()
-            
-            # MSE: Explicit mean matching
-            mse_loss = (tanh_mean - expert_action).pow(2).mean()
-
-            # std_reg_coef = 0.10  # regularization on log std to prevent variance collapse
-            action_match_coef = 1 # Weight of action matching to enforce per-dimension mean learning
-            
-            # Combined actor loss
-            val_loss = nll_loss + action_match_coef * mse_loss  # - std_reg_coef * log_std.mean()
-            val_loss_sum += val_loss.item()
-
-    avg_val_loss = val_loss_sum / val_num_batches
-    val_losses.append(avg_val_loss)
-
-    # Print epoch results
-    print(f'  Loss: train={avg_actor_loss:.4f} | val={avg_val_loss:.4f}')
-
-    # TensorBoard logging
-    writer.add_scalars('Actor Loss', {'train': avg_actor_loss, 'val': avg_val_loss}, epoch_number + 1)
-    writer.flush()
-
-    # Save best actor based on validation actor loss
-    if avg_val_loss < best_vloss:
-        best_vloss = avg_val_loss
-        if not os.path.exists(f'../saved_models_state_goal/{env_id}'):
-            os.makedirs(f'../saved_models_state_goal/{env_id}')
-        model_path = f'../saved_models_state_goal/{env_id}/bc_model_actor_{timestamp}_{epoch_number}'
-        torch.save(actor.state_dict(), model_path)
-        print(f'  ✓ Saved best actor model')
-
-    epoch_number += 1
-
-    # Print diagnostics
-    print(
-        f"  [Diagnostics] "
-        f"policy_std={avg_policy_std:.4f} | "
-        f"mean_pre_tanh={avg_mean_action_norm_pre:.4f} | "
-        f"mean_post_tanh={avg_mean_action_norm_post:.4f} | "
-        f"action_std_post_tanh={avg_action_std_post_tanh:.4f} | "
-        f"action_l2_error={avg_action_l2_error:.4f} | "
-        f"expert_std={avg_expert_std:.4f}"
+    # Check dataset action stats
+    all_actions = torch.cat(
+        [batch["actions"] for batch in train_loader],
+        dim=0
     )
 
-# ===== TRAINING COMPLETE =====
-print(f"\n{'='*60}")
-print(f"Training Complete! Best validation loss: {best_vloss:.4f}")
-print(f"{'='*60}")
+    print("\n=== DATASET ACTION STATS ===")
+    print("Action mean per dim:", all_actions.mean(dim=0))
+    print("Action std  per dim:", all_actions.std(dim=0))
+    print("Mean action L2 norm:", all_actions.norm(dim=-1).mean().item())
+    print("================================\n")
+    time = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-# Save final loss plots
-if not os.path.exists(f'../saved_models_state_goal/{env_id}/loss_plots'):
-    os.makedirs(f'../saved_models_state_goal/{env_id}/loss_plots')
+    for epoch in range(EPOCHS):
+        print(f'\nEPOCH {epoch_number + 1}/{EPOCHS}')
 
-# Plot actor losses
-plt.figure(figsize=(10, 5))
-plt.plot(train_losses, label="Train Loss", color="blue")
-plt.plot(val_losses, label="Val Loss", color="red")
-plt.xlabel("Epoch")
-plt.ylabel("Actor Loss")
-plt.title("Actor Loss Over Epochs")
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.savefig(f"../saved_models_state_goal/{env_id}/loss_plots/actor_loss.png")
-plt.close()
+        # ===== TRAINING PHASE =====
+        actor.train()
+        avg_actor_loss, avg_policy_std, avg_mean_action_norm_pre, avg_mean_action_norm_post, avg_action_std_post_tanh, avg_action_l2_error, avg_expert_std, avg_denorm_expert_std = train_one_epoch(epoch_number, writer, low, high, actor)
+        train_losses.append(avg_actor_loss)
 
-print(f"Saved loss plots to ../saved_models_state_goal/{env_id}/loss_plots/")
+        # ===== VALIDATION PHASE =====
+        actor.eval()
+        val_loss_sum = 0.0
+        val_num_batches = 0
+
+        with torch.no_grad():
+            for i, vdata in enumerate(val_loader):
+                obs, expert_action = vdata['observations'], vdata['actions']
+                # Normalize actions to [-1, 1]
+                expert_action = 2.0 * (expert_action - low) / (high - low) - 1.0
+                expert_action = torch.clamp(expert_action, -0.95, 0.95)
+                obs = obs.to(device)
+                expert_action = expert_action.to(device)
+                val_num_batches += 1
+                
+                # ===== ACTOR LOSS =====
+                dist, tanh_mean, _, _, log_std, _ = actor(obs)
+                log_prob = dist.log_prob(expert_action)
+                
+                # NLL: Maximum likelihood estimation
+                nll_loss = -log_prob.sum(dim=-1).mean()
+                
+                # MSE: Explicit mean matching
+                mse_loss = (tanh_mean - expert_action).pow(2).mean()
+
+                # std_reg_coef = 0.10  # regularization on log std to prevent variance collapse
+                action_match_coef = 1 # Weight of action matching to enforce per-dimension mean learning
+                
+                # Combined actor loss
+                val_loss = nll_loss + action_match_coef * mse_loss  # - std_reg_coef * log_std.mean()
+                val_loss_sum += val_loss.item()
+
+        avg_val_loss = val_loss_sum / val_num_batches
+        val_losses.append(avg_val_loss)
+
+        # Print epoch results
+        print(f'  Loss: train={avg_actor_loss:.4f} | val={avg_val_loss:.4f}')
+
+        # TensorBoard logging
+        writer.add_scalars('Actor Loss', {'train': avg_actor_loss, 'val': avg_val_loss}, epoch_number + 1)
+        writer.flush()
+
+        # Save best actor based on validation actor loss
+        if avg_val_loss < best_vloss:
+            best_vloss = avg_val_loss
+            model_dir = f'{env_name}/saved_models/{timestamp}'
+            os.makedirs(model_dir, exist_ok=True)
+            model_path = f'{model_dir}/bc_model_actor_best.pt'
+            torch.save(actor.state_dict(), model_path)
+            print(f'  ✓ Saved best actor model to {model_path} (val_loss={avg_val_loss:.4f})')
+
+        epoch_number += 1
+
+        # Print diagnostics
+        print(
+            f"  [Diagnostics] "
+            f"policy_std={avg_policy_std:.4f} | "
+            f"mean_pre_tanh={avg_mean_action_norm_pre:.4f} | "
+            f"mean_post_tanh={avg_mean_action_norm_post:.4f} | "
+            f"action_std_post_tanh={avg_action_std_post_tanh:.4f} | "
+            f"action_l2_error={avg_action_l2_error:.4f} | "
+            f"expert_std={avg_expert_std:.4f}"
+        )
+
+    # ===== TRAINING COMPLETE =====
+    print(f"\n{'='*60}")
+    print(f"Training Complete! Best validation loss: {best_vloss:.4f}")
+    print(f"{'='*60}")
+
+    # Save final loss plots
+    plot_dir = f'{env_name}/loss_plots/{timestamp}'
+    os.makedirs(plot_dir, exist_ok=True)
+    
+    # Plot actor losses
+    plt.figure(figsize=(10, 5))
+    plt.plot(train_losses, label=f"Train Loss for {env_name}", color="blue")
+    plt.plot(val_losses, label=f"Val Loss for {env_name}", color="red")
+    plt.xlabel("Epoch")
+    plt.ylabel("Actor Loss")
+    plt.legend()
+    plt.title(f'Losses for {env_name}')
+    plot_path = f'{plot_dir}/loss_plot.png'
+    plt.savefig(plot_path)
+    plt.close()
+
+    print(f"Saved loss plots to {plot_path}")
+
+if __name__ == "__main__":
+    main()
