@@ -1,4 +1,0 @@
-hyperparameters:
-  lmbda: 0.95
-  num_epochs: 4
-  aux_loss_mult: 1.0

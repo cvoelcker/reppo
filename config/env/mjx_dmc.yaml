@@ -1,9 +1,0 @@
-type: mjx
-name:
-max_episode_steps: 1000
-reward_scaling: 1.0
-terminate: false
-asymmetric_obs: false
-
-vmin: 0
-vmax: 150

@@ -1,8 +1,0 @@
-hyperparameters:
-  gamma: 0.97
-  critic_hidden_dim: 1024
-  num_envs: 1024
-  num_steps: 32
-  num_mini_batches: 4
-  num_epochs: 8
-  kl_bound: 0.1
