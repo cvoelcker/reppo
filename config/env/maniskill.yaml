@@ -26,7 +26,7 @@ vmax: 15
 
 # Demo loading configuration
 demo:
-  batch_size: 64
-  demo_path: /scratch/cluster/idutta/h5_files/trajectory.rgb.pd_joint_pos.physx_cpu.h5
+  batch_size: 1024
+  demo_path: /scratch/cluster/idutta/h5_files/PushCube/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5
   max_episodes: null
   filter_success: true

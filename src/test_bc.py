@@ -4,31 +4,15 @@ import mani_skill.envs
 import gymnasium as gym
 import imageio
 import numpy as np
-import hydra
 from omegaconf import OmegaConf
 from collections import defaultdict
 from src.network_utils.torch_models import Actor
+import hydra
+import wandb
 from pathlib import Path
 import h5py
+from datetime import datetime
 from src.maniskill_utils.maniskill_dataloader_shabnam import DemoConfig, ManiSkillDemoLoader
-    
-def denormalize_action(normalized_action, low, high):
-    """
-    Denormalize actions from [-1, 1] back to original action space [low, high].
-    Only denormalizes if the action space is not already [-1, 1].
-    This is the inverse of: normalized = 2.0 * (action - low) / (high - low) - 1.0
-    """
-    # Check if action space is already [-1, 1] (like pd_joint_delta_pos)
-    low_is_minus_one = np.allclose(low, -1.0, atol=1e-4)
-    high_is_one = np.allclose(high, 1.0, atol=1e-4)
-    
-    if low_is_minus_one and high_is_one:
-        # Actions are already in [-1, 1], no denormalization needed
-        return normalized_action
-    
-    # Inverse formula: action = (normalized + 1.0) * (high - low) / 2.0 + low
-    denormalized = (normalized_action + 1.0) * (high - low) / 2.0 + low
-    return denormalized
 
 def make_eval_env(env_id, control_mode="pd_joint_pos", seed=0, render=True):
     env = gym.make(
@@ -42,61 +26,83 @@ def make_eval_env(env_id, control_mode="pd_joint_pos", seed=0, render=True):
     env.reset(seed=seed)
     return env
 
-def replay_expert_and_measure_mse(actor, dataset_low, dataset_high, env_low, env_high, env_id, demo_path, device='cpu'):
+def replay_expert_and_measure_mse(cfg, save_dir, device='cpu'):
     """
-    Replay expert states from H5 file and measure MSE between policy and expert actions.
-    Policy outputs are normalized by DATASET bounds, so denormalize using dataset bounds, then clip to env bounds.
+    Replay expert trajectories in a real environment using raw dataset actions.
+    Records videos of the expert replays.
     """
-    # Load expert demonstrations
+
     config = DemoConfig(device=torch.device("cpu"), filter_success_only=True)
-    loader = ManiSkillDemoLoader(config, env_id)
-    trajectories, metadata = loader.load_demo_dataset(demo_path)
+    loader = ManiSkillDemoLoader(config, cfg.env.name)
+    trajectories, metadata = loader.load_demo_dataset(cfg.env.demo.demo_path)
     
-    # Run the policy on the dataset to log stats and MSE
-    for traj_idx, traj in enumerate(trajectories[:3]):  # Sample first 3 trajectories
-        obs = traj['observations']  # [T, 25]
-        expert_actions = traj['actions']  # [T, 8]
-        mse_list = []
-        policy_action_list = []
+    # Create subdirectory for expert replay videos (one level above save_dir)
+    expert_video_dir = Path(save_dir).parent / "expert_replays"
+    expert_video_dir.mkdir(parents=True, exist_ok=True)
+    
+    demo_obs_keys = get_demo_obs_keys(cfg.env.demo.demo_path)
+    
+    for traj_idx, traj in enumerate(trajectories[:200]):
+        obs_data = traj['observations'] 
+        expert_actions = traj['actions']
         
-        # Compute overall expert action std across entire trajectory (not per timestep)
-        expert_action_std_overall = expert_actions.std(dim=0).mean().item()
+        # Create environment for this replay
+        env = make_eval_env(cfg.env.name, control_mode=cfg.env.get('control_mode'), seed=traj_idx, render=True)
         
-        for t in range(len(obs)):
-            obs_t = obs[t:t+1].to(device)  # [1, 25]
-            expert_action_t = expert_actions[t:t+1].to(device)  # [1, 8]
+        frames = []
+        traj_reward = 0.0
+        traj_success = False
+        
+        print(f"\n=== REPLAYING TRAJECTORY {traj_idx} ===")
+        print(f"Trajectory length: {len(expert_actions)} steps")
+        
+        obs, _ = env.reset()
+        
+        # Capture initial frame after reset
+        frame = env.render()
+        if frame is not None:
+            if isinstance(frame, torch.Tensor):
+                frame = frame.cpu().numpy()
+            if frame.ndim == 4 and frame.shape[0] == 1:
+                frame = frame[0]
+            frames.append(frame)
+        
+        # Replay trajectory using raw expert actions
+        for t in range(len(expert_actions)):
+            expert_action = expert_actions[t].cpu().numpy()
             
-            with torch.no_grad():
-                pi, tanh_mean, _, _, log_std, mean = actor(obs_t)
-                
-                # Sample action from the distribution (in normalized [-1, 1] space)
-                sampled_action_normalized = pi.sample().squeeze(0).cpu().numpy()
-                
-                # Denormalize using ENV bounds (policy was trained on env-normalized actions)
-                policy_action = denormalize_action(sampled_action_normalized, env_low.numpy(), env_high.numpy())
-                
-                # Clip to ENV bounds before feeding to environment
-                policy_action = np.clip(policy_action, env_low.numpy(), env_high.numpy())
-                
-                # Store for std computation
-                policy_action_list.append(policy_action)
-                
-                # MSE between policy and expert
-                mse = np.mean((policy_action - expert_action_t.squeeze(0).cpu().numpy())**2)
-                mse_list.append(mse)
+            # ManiSkill will automatically normalize this action based on controller config
+            # (normalize_action=True by default for pd_joint_delta_pos)
+            # Step environment with raw expert action
+            obs, reward, terminated, truncated, info = env.step(expert_action)
+            
+            if isinstance(reward, torch.Tensor):
+                reward = reward.item()
+            traj_reward += reward
+            traj_success |= info.get("success", False)
+            
+            # Capture frame after step
+            frame = env.render()
+            if frame is not None:
+                if isinstance(frame, torch.Tensor):
+                    frame = frame.cpu().numpy()
+                if frame.ndim == 4 and frame.shape[0] == 1:
+                    frame = frame[0]
+                frames.append(frame)
+            
+            if terminated or truncated:
+                break
         
-        # Compute std of sampled policy actions across trajectory
-        policy_action_array = np.array(policy_action_list)
-        policy_action_std_overall = policy_action_array.std(axis=0).mean() if len(policy_action_list) > 1 else 0.0
+        if frames:
+            video_path = str(expert_video_dir / f"traj_{traj_idx:03d}.mp4")
+            frames_stacked = np.stack(frames, axis=0)
+            imageio.mimsave(video_path, frames_stacked, fps=30)
+            print(f"Saved expert replay video: {video_path}")
         
-        # Print stats per trajectory
-        print(f"\n=== TRAJECTORY {traj_idx} EXPERT REPLAY MSE ===")
-        print(f"Mean MSE (policy vs expert actions): {np.mean(mse_list):.4f}")
-        print(f"Std MSE: {np.std(mse_list):.4f}")
-        print(f"Policy action std (sampled): {policy_action_std_overall:.4f}")
-        print(f"Expert action std: {expert_action_std_overall:.4f}")
-        print(f"Std ratio (policy/expert): {policy_action_std_overall / (expert_action_std_overall + 1e-6):.2f}x")
+        print(f"Expert replay - Reward: {traj_reward:.3f}, Success: {traj_success}, Steps: {len(frames)}")
         print(f"=" * 50)
+        
+        env.close()
 
 def get_demo_obs_keys(demo_path):
     """Extract which observation keys are actually in the demo file."""
@@ -134,17 +140,17 @@ def flatten_obs(obs_dict, env, demo_obs_keys):
                     obs_list.append(data_flat)
     
     # Add env_states/actors data
-    if hasattr(env.unwrapped, 'get_state_dict'):
-        state = env.unwrapped.get_state_dict()
-        if 'actors' in state:
-            for actor_name in sorted(state['actors'].keys()):
-                actor_data = state['actors'][actor_name]
-                if isinstance(actor_data, np.ndarray):
-                    data_flat = actor_data.reshape(actor_data.shape[0], -1) if len(actor_data.shape) > 1 else actor_data.reshape(1, -1)
-                else:
-                    data_array = np.asarray(actor_data.cpu()) if hasattr(actor_data, 'cpu') else np.asarray(actor_data)
-                    data_flat = data_array.reshape(1, -1) if data_array.ndim == 1 else data_array.reshape(data_array.shape[0], -1)
-                obs_list.append(data_flat)
+    # if hasattr(env.unwrapped, 'get_state_dict'):
+    #     state = env.unwrapped.get_state_dict()
+    #     if 'actors' in state:
+    #         for actor_name in sorted(state['actors'].keys()):
+    #             actor_data = state['actors'][actor_name]
+    #             if isinstance(actor_data, np.ndarray):
+    #                 data_flat = actor_data.reshape(actor_data.shape[0], -1) if len(actor_data.shape) > 1 else actor_data.reshape(1, -1)
+    #             else:
+    #                 data_array = np.asarray(actor_data.cpu()) if hasattr(actor_data, 'cpu') else np.asarray(actor_data)
+    #                 data_flat = data_array.reshape(1, -1) if data_array.ndim == 1 else data_array.reshape(data_array.shape[0], -1)
+    #             obs_list.append(data_flat)
     
     if not obs_list:
         raise ValueError(f"No observation data found in obs_dict with keys: {obs_dict.keys()}")
@@ -152,63 +158,64 @@ def flatten_obs(obs_dict, env, demo_obs_keys):
     result = np.concatenate(obs_list, axis=1)
     return result
 
-def test(env_id = 'PushCube-v1', control_mode = "pd_joint_pos", cfg_path = "../reppo/config/algorithm/reppo.yaml",  model_path = "../reppo/bc_utils/bc_model_actor_20260127_195206_180.pth", trajectory_path = "/scratch/cluster/idutta/h5_files/PushCube/trajectory.rgb.pd_joint_pos.physx_cpu.h5"):
-    # Load config
-    cfg = OmegaConf.load(cfg_path)
-    # print(env_id, control_mode, model_path, trajectory_path)
+def test(cfg, env_id=None, model_path=None, demo_path=None):
+    # Initialize wandb
+    wandb.init(
+        config=dict(cfg),
+        entity=cfg.logging.entity,
+        project=cfg.logging.project,
+        name=f"bc_eval_no_clamp_linear_scale_no_envstates_{cfg.env.name}",
+        mode=cfg.logging.mode
+    )
+    
+    # Use cfg from Hydra if provided, otherwise load it
+    if cfg is None:
+        config_path = Path(__file__).parent.parent / "config" / "default" / "reppo_maniskill.yaml"
+        cfg = OmegaConf.load(str(config_path))
+    
+    # Override env_id and demo_path if provided
+    if env_id:
+        cfg.env.name = env_id
+    if demo_path:
+        cfg.env.demo.demo_path = demo_path
+    
+    env_id = cfg.env.name
+    demo_path = cfg.env.demo.demo_path
 
     # Get demo observation keys to know which fields to extract
-    demo_obs_keys = get_demo_obs_keys(trajectory_path)
+    demo_obs_keys = get_demo_obs_keys(demo_path)
     print(f"Demo observation keys: {demo_obs_keys}")
-
-    # Create a temporary env to get action bounds
-    temp_env = gym.make(env_id, obs_mode="state_dict", control_mode=control_mode)
-    env_low = torch.from_numpy(temp_env.action_space.low).float()
-    env_high = torch.from_numpy(temp_env.action_space.high).float()
-    temp_env.close()
-    
-    print(f"\n=== ENV ACTION SPACE INFO ===")
-    print(f"Action bounds - Low: {env_low.numpy()}")
-    print(f"Action bounds - High: {env_high.numpy()}")
-    print(f"Action space range: {(env_high - env_low).numpy()}")
-    print(f"Action space center: {((env_high + env_low) / 2).numpy()}")
-    print(f"=" * 50)
-    
-    # Load offline dataset and check action bounds
-    config = DemoConfig(device=torch.device("cpu"), filter_success_only=True)
-    loader = ManiSkillDemoLoader(config, env_id)
-    trajectories_for_bounds, _ = loader.load_demo_dataset(
-        trajectory_path=trajectory_path
-    )
-    n_obs = trajectories_for_bounds[0]['observations'].shape[1]
-    n_act = trajectories_for_bounds[0]['actions'].shape[1]
-    print(f"Observation dimension from dataset: {n_obs}, Action dimension from dataset: {n_act}")
 
     # Load actor
     device = f'cuda:0' if torch.cuda.is_available() else 'cpu'
+    
+    # Dynamically determine observation and action dimensions from demo data
+    config = DemoConfig(device=torch.device("cpu"), filter_success_only=True)
+    loader = ManiSkillDemoLoader(config, env_id)
+    trajectories_for_dims, _ = loader.load_demo_dataset(demo_path)
+    n_obs = trajectories_for_dims[0]["observations"].shape[1]
+    n_act = trajectories_for_dims[0]["actions"].shape[1]
+    
     actor = Actor(
         n_obs=n_obs,
         n_act=n_act,
-        ent_start=cfg.ent_start,
-        kl_start=cfg.kl_start,
-        hidden_dim=cfg.actor_hidden_dim,
-        use_norm=cfg.use_actor_norm,
-        layers=cfg.num_actor_layers,
-        min_std=cfg.actor_min_std,
+        ent_start=cfg.algorithm.ent_start,
+        kl_start=cfg.algorithm.kl_start,
+        hidden_dim=cfg.algorithm.actor_hidden_dim,
+        use_norm=cfg.algorithm.use_actor_norm,
+        layers=cfg.algorithm.num_actor_layers,
+        min_std=cfg.algorithm.actor_min_std,
         device=device,
     )
-    
-    # Register learnable dimension weights parameter (COMMENTED OUT - not helping)
-    # dim_weights_param = torch.nn.Parameter(torch.ones(n_act, device=device))
-    # actor.register_parameter('dim_weights', dim_weights_param)
+    print(f"Actor created with n_obs={n_obs}, n_act={n_act}")
     
     # Load trained weights
     if model_path is None:
-        # Prefer per-env best model path: outputs/<date>/saved_models_state_noise_v3/<env_id>/bc_model_actor_best.pt
+        # Prefer per-env best model path: outputs/<date>/<time>/<env_id>/saved_models/<timestamp>/bc_model_actor_best.pt
         outputs_dir = Path(__file__).parent.parent / "outputs"
         if outputs_dir.exists():
             best_candidates = list(
-                outputs_dir.glob(f"*/saved_models_state_noise_v3/{env_id}/bc_model_actor_best.pt")
+                outputs_dir.glob(f"*/*/{env_id}/saved_models/*/bc_model_actor_best.pt")
             )
             if best_candidates:
                 model_path = str(max(best_candidates, key=lambda p: p.stat().st_mtime))
@@ -223,12 +230,11 @@ def test(env_id = 'PushCube-v1', control_mode = "pd_joint_pos", cfg_path = "../r
     actor.load_state_dict(torch.load(str(model_path), map_location=device))
     actor.eval()
     
-    # Stop gradients for all parameters during evaluation
     for param in actor.parameters():
         param.requires_grad = False
 
     # Create a temporary env to get action bounds
-    temp_env = gym.make(env_id, control_mode=control_mode, obs_mode="state_dict")
+    temp_env = gym.make(env_id, control_mode=cfg.env.get('control_mode'), obs_mode="state_dict")
     env_low = torch.from_numpy(temp_env.action_space.low).float()
     env_high = torch.from_numpy(temp_env.action_space.high).float()
     temp_env.close()
@@ -240,52 +246,40 @@ def test(env_id = 'PushCube-v1', control_mode = "pd_joint_pos", cfg_path = "../r
     print(f"Action space center: {((env_high + env_low) / 2).numpy()}")
     print(f"=" * 50)
     
-    # Load offline dataset and check action bounds
-    config = DemoConfig(device=torch.device("cpu"), filter_success_only=True)
-    loader = ManiSkillDemoLoader(config, env_id)
-    trajectories_for_bounds, _ = loader.load_demo_dataset(
-        trajectory_path=trajectory_path
-    )
+    # Collect all actions from dataset and compute bounds with safety margin
+    all_dataset_actions = torch.cat([traj['actions'] for traj in trajectories_for_dims], dim=0)
+    data_low = all_dataset_actions.min(dim=0).values
+    data_high = all_dataset_actions.max(dim=0).values
     
-    # Collect all actions from dataset
-    all_dataset_actions = torch.cat([traj['actions'] for traj in trajectories_for_bounds], dim=0)
-    dataset_low = all_dataset_actions.min(dim=0).values
-    dataset_high = all_dataset_actions.max(dim=0).values
+    # Add 10% safety margin to bounds (same as training)
+    margin = 0.1 * (data_high - data_low)
+    low_with_margin = data_low - margin
+    high_with_margin = data_high + margin
     
-    print(f"\n=== OFFLINE DATASET ACTION BOUNDS ===")
+    # Ensure bounds are at least [-1, 1] in each dimension
+    dataset_low = torch.min(low_with_margin, torch.full_like(low_with_margin, -1.0))
+    dataset_high = torch.max(high_with_margin, torch.full_like(high_with_margin, 1.0))
+    
+    print(f"\n=== OFFLINE DATASET ACTION BOUNDS (with 10% safety margin) ===")
     print(f"Dataset Action bounds - Low: {dataset_low.numpy()}")
     print(f"Dataset Action bounds - High: {dataset_high.numpy()}")
     print(f"Dataset space range: {(dataset_high - dataset_low).numpy()}")
     print(f"Dataset space center: {((dataset_high + dataset_low) / 2).numpy()}")
     print(f"=" * 50)
-    
-    # Compare env bounds with dataset bounds
-    print(f"\n=== COMPARISON: ENV vs DATASET ===")
-    print(f"Action dim | Env Low  | Dataset Low | Match?")
-    for i in range(len(env_low)):
-        match = "✓" if torch.isclose(env_low[i], dataset_low[i], atol=0.01) else "✗"
-        print(f"    {i}    | {env_low[i]:7.3f} | {dataset_low[i]:10.3f} | {match}")
-    
-    print(f"\nAction dim | Env High | Dataset High | Match?")
-    for i in range(len(env_high)):
-        match = "✓" if torch.isclose(env_high[i], dataset_high[i], atol=0.01) else "✗"
-        print(f"    {i}    | {env_high[i]:7.3f} | {dataset_high[i]:12.3f} | {match}")
-    print(f"=" * 50)
 
-    # define configs
-    num_episodes=50
+    num_episodes=500
     max_steps=100
-    parent_dir = Path("../eval_videos_v2")
-    parent_dir.mkdir(parents=True, exist_ok=True)
-    save_dir = parent_dir / env_id.split('-')[0]
+    
+    # Save videos in the same directory as the model
+    model_parent_dir = Path(model_path).parent
+    save_dir = model_parent_dir / "eval_videos"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     # save stats
     stats = defaultdict(list)
-    action_diagnostics = []  # Track action statistics
 
     for ep in range(num_episodes):
-        env = make_eval_env(env_id, control_mode=control_mode, seed=ep, render=True)
+        env = make_eval_env(env_id, control_mode=cfg.env.get('control_mode'), seed=ep, render=True)
         obs, _ = env.reset()
         obs_tensor = torch.as_tensor(flatten_obs(obs, env, demo_obs_keys), dtype=torch.float32, device=device)
 
@@ -296,42 +290,19 @@ def test(env_id = 'PushCube-v1', control_mode = "pd_joint_pos", cfg_path = "../r
 
         for t in range(max_steps):
 
-            # do forward pass on GPU
             with torch.no_grad():
                 pi, tanh_mean, _, _, log_std, mean = actor(obs_tensor.to(device))
                 
-                # Sample action from the distribution (in [-1, 1] due to tanh transform)
-                normalized_action = pi.sample().squeeze(0).cpu().numpy()
-                # Denormalize using ENV bounds (policy was trained on env-normalized actions)
-                action = denormalize_action(normalized_action, env_low.numpy(), env_high.numpy())
+                # Sample action from the distribution (in [-1, 1] normalized space)
+                normalized_action = pi.sample().squeeze(0).cpu()  # Keep as tensor for computation
                 
-                # Actions should be within env bounds
-                action_clipped = np.clip(action, env_low.numpy(), env_high.numpy())
-                
-                # Clip to ENV bounds before feeding to environment
-                action_clipped = np.clip(action, env_low.numpy(), env_high.numpy())
-                out_of_bounds = not np.allclose(action, action_clipped)
-                if out_of_bounds:
-                    out_of_bounds_count += 1
-                
-                # Track diagnostics
-                with torch.no_grad():
-                    std = (torch.exp(log_std) + actor.min_std).squeeze(0).cpu().numpy()
-                    action_diagnostics.append({
-                        'step': t,
-                        'episode': ep,
-                        'normalized_action': normalized_action,
-                        'denormalized_action': action,
-                        'action_clipped': action_clipped,
-                        'out_of_bounds': out_of_bounds,
-                        'action_std': std,
-                        'mean_pre_tanh': mean.squeeze(0).cpu().numpy(),
-                        'action_norm': np.linalg.norm(action),
-                        'normalized_action_norm': np.linalg.norm(normalized_action)
-                    })
+                # Rescale from [-1, 1] to original per-dimension dataset bounds
+                # Inverse of training normalization: action = (normalized + 1) * (high - low) / 2 + low
+                action = (normalized_action + 1.0) * (dataset_high - dataset_low) / 2.0 + dataset_low
+                action = action.numpy()
             
-            # Use clipped action for environment
-            action = action_clipped
+            # Use rescaled action for environment
+            # ManiSkill's controller will handle normalization internally
             obs, reward, terminated, truncated, info = env.step(action)
 
             ep_reward += reward
@@ -357,6 +328,14 @@ def test(env_id = 'PushCube-v1', control_mode = "pd_joint_pos", cfg_path = "../r
         stats["success"].append(float(success))
         stats["length"].append(t + 1)
         stats["out_of_bounds"].append(out_of_bounds_count)
+        
+        # Log to wandb per episode
+        wandb.log({
+            "eval/reward": ep_reward,
+            "eval/success": float(success),
+            "eval/episode_length": t + 1,
+            "eval/out_of_bounds_count": out_of_bounds_count,
+        }, step=ep)
 
         print(
             f"EP {ep:02d} | reward {ep_reward.cpu().item():.2f} | "
@@ -365,58 +344,34 @@ def test(env_id = 'PushCube-v1', control_mode = "pd_joint_pos", cfg_path = "../r
 
         env.close()
 
-    # Print action space diagnostics after evaluation
-    if action_diagnostics:
-        action_diag_array = np.array([d['denormalized_action'] for d in action_diagnostics])
-        action_clipped_array = np.array([d['action_clipped'] for d in action_diagnostics])
-        normalized_action_array = np.array([d['normalized_action'] for d in action_diagnostics])
-        
-        print(f"\n=== EVALUATION ACTION STATISTICS ===")
-        print(f"\nOriginal (denormalized) actions:")
-        print(f"  Mean per dim: {action_diag_array.mean(axis=0)}")
-        print(f"  Std per dim: {action_diag_array.std(axis=0)}")
-        print(f"  Min per dim: {action_diag_array.min(axis=0)}")
-        print(f"  Max per dim: {action_diag_array.max(axis=0)}")
-        print(f"  Mean L2 norm: {np.mean([d['action_norm'] for d in action_diagnostics]):.3f}")
-        
-        print(f"\nNormalized (pre-denorm) actions:")
-        print(f"  Mean per dim: {normalized_action_array.mean(axis=0)}")
-        print(f"  Std per dim: {normalized_action_array.std(axis=0)}")
-        print(f"  Mean L2 norm: {np.mean([d['normalized_action_norm'] for d in action_diagnostics]):.3f}")
-        
-        print(f"\nClipped actions:")
-        print(f"  Mean per dim: {action_clipped_array.mean(axis=0)}")
-        print(f"  Std per dim: {action_clipped_array.std(axis=0)}")
-        
-        out_of_bounds_total = sum(1 for d in action_diagnostics if d['out_of_bounds'])
-        print(f"\nOut of bounds: {out_of_bounds_total} / {len(action_diagnostics)} steps ({100*out_of_bounds_total/len(action_diagnostics):.1f}%)")
-        print(f"=" * 50)
-    
-    # Print summary stats
     print(f"\n=== EVALUATION SUMMARY ===")
     print(f"Average reward: {np.mean(stats['reward']):.3f}")
     print(f"Success rate: {np.mean(stats['success']):.1%}")
     print(f"Average episode length: {np.mean(stats['length']):.1f}")
     print(f"Average out-of-bounds steps per episode: {np.mean(stats['out_of_bounds']):.1f}")
     print(f"=" * 50)
-    
-    # Replay expert states and measure MSE
-    replay_expert_and_measure_mse(
-        actor,
-        dataset_low,
-        dataset_high,
-        env_low,
-        env_high,
-        env_id,
-        trajectory_path,
-        device=device,
-    )
 
-# Call test function with default parameters
-test(
-    env_id='RollBall-v1',
-    control_mode="pd_joint_delta_pos",
-    cfg_path="../reppo/config/algorithm/reppo.yaml",
-    model_path="/scratch/cluster/idutta/saved_models_state_goal/RollBall-v1/bc_model_actor_20260215_220947_73",
-    trajectory_path="/scratch/cluster/idutta/h5_files/RollBall/trajectory.rgb.pd_joint_delta_pos.physx_cpu.h5"
-)
+    wandb.log({
+        "eval/avg_reward": np.mean(stats['reward']),
+        "eval/success_rate": np.mean(stats['success']),
+        "eval/avg_episode_length": np.mean(stats['length']),
+        "eval/avg_out_of_bounds": np.mean(stats['out_of_bounds']),
+    })
+    
+    wandb.finish()
+    
+    # Replay expert trajectories in environment and record videos
+    # replay_expert_and_measure_mse(
+    #     cfg,
+    #     save_dir,
+    #     device=device,
+    # )
+
+@hydra.main(version_base=None, config_path="../config/default", config_name="reppo_maniskill")
+def main(cfg):
+    OmegaConf.set_struct(cfg, False)
+    model_path = OmegaConf.select(cfg, "model_path")
+    test(cfg=cfg, env_id=None, model_path=model_path, demo_path=cfg.env.demo.demo_path)
+
+if __name__ == "__main__":
+    main()

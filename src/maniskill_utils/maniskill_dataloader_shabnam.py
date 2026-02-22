@@ -146,15 +146,15 @@ class ManiSkillDemoLoader:
 
     def _load_observations(self, obs_group: h5py.Group, traj_group: h5py.Group = None) -> np.ndarray:
         # modified BC
-        noise_std = 0.02     # standard deviation of Gaussian noise
-        noise_indices = None # indices of observation dimensions to add noise to
+        # noise_std = 0.02     # standard deviation of Gaussian noise
+        # noise_indices = None # indices of observation dimensions to add noise to
         """Load observations from HDF5 group."""
         if isinstance(obs_group, h5py.Dataset):
             return np.array(obs_group)
         obs_data = []
         # modified BC
-        robot_indices = []  # track which columns correspond to robot
-        col_offset = 0
+        # robot_indices = []  # track which columns correspond to robot
+        # col_offset = 0
         for key in sorted(obs_group.keys()):  # iterates over available actors
             sub_group = obs_group[key]
             if key in ('agent', 'extra'):
@@ -165,34 +165,34 @@ class ManiSkillDemoLoader:
                         data = np.array(sub_group[sub_key])
                         data_flat = data.reshape(data.shape[0], -1)
                         # mark agent columns for noise
-                        robot_indices.extend(range(col_offset, col_offset + data_flat.shape[1]))
-                        col_offset += data_flat.shape[1]
+                        # robot_indices.extend(range(col_offset, col_offset + data_flat.shape[1]))
+                        # col_offset += data_flat.shape[1]
                         obs_data.append(data_flat)
                     elif key == 'extra':
                         # Include ALL extra fields
                         data = np.array(sub_group[sub_key])
                         data_flat = data.reshape(data.shape[0], -1)
-                        col_offset += data_flat.shape[1]
+                        # col_offset += data_flat.shape[1]
                         obs_data.append(data_flat)
         
         # Load env_states/actors data if available
-        if traj_group is not None and 'env_states' in traj_group:
-            env_states = traj_group['env_states']
-            if 'actors' in env_states:
-                actors_group = env_states['actors']
-                for actor_key in sorted(actors_group.keys()):
-                    data = np.array(actors_group[actor_key])
-                    data_flat = data.reshape(data.shape[0], -1)
-                    col_offset += data_flat.shape[1]
-                    obs_data.append(data_flat)
+        # if traj_group is not None and 'env_states' in traj_group:
+        #     env_states = traj_group['env_states']
+        #     if 'actors' in env_states:
+        #         actors_group = env_states['actors']
+        #         for actor_key in sorted(actors_group.keys()):
+        #             data = np.array(actors_group[actor_key])
+        #             data_flat = data.reshape(data.shape[0], -1)
+        #             # col_offset += data_flat.shape[1]
+        #             obs_data.append(data_flat)
 
         obs_data = np.concatenate(obs_data, axis=1)
-        # Add Gaussian noise to agent columns only
-        if noise_std > 0.0 and len(robot_indices) > 0:
-            obs_noisy = obs_data.copy()
-            noise = np.random.randn(obs_noisy.shape[0], len(robot_indices)) * noise_std
-            obs_noisy[:, robot_indices] += noise
-            return obs_noisy
+        # # Add Gaussian noise to agent columns only
+        # if noise_std > 0.0 and len(robot_indices) > 0:
+        #     obs_noisy = obs_data.copy()
+        #     noise = np.random.randn(obs_noisy.shape[0], len(robot_indices)) * noise_std
+        #     obs_noisy[:, robot_indices] += noise
+            # return obs_noisy
 
         return obs_data
 
@@ -258,11 +258,11 @@ def load_demos_for_training(env_id: str,
     act_dim = trajectories[0]["actions"].shape[1]  # 8 for non flattened
     # find min and max action values
     # actions = trajectories["actions"]   # shape [N, 8]
-    actions = torch.cat([td["actions"] for td in trajectories], dim=0) # for non flattened
-    act_min = actions.min(dim=0).values   # [8]
-    act_max = actions.max(dim=0).values   # [8]
+    # actions = torch.cat([td["actions"] for td in trajectories], dim=0) # for non flattened
+    # act_min = actions.min(dim=0).values   # [8]
+    # act_max = actions.max(dim=0).values   # [8]
     print(f"Created {len(train_loader)} and {len(val_loader)} dataset from {demo_path}")
-    return train_loader, val_loader, obs_dim, act_dim
+    return train_loader, val_loader, obs_dim, act_dim, None, None
 
 # result = load_demos_for_training("PushCube-v1", device=torch.device("cpu"), filter_success=True)
 
