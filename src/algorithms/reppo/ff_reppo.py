@@ -304,8 +304,8 @@ def make_policy_fn(
 
         policy = REPPOPolicy(
             base=actor_model,
-            normalizer=normalizer,
-            normalization_state=train_state.normalization_state if cfg.normalize_env else None,
+            normalizer=normalizer if cfg.normalize_env else None,
+            normalization_state=train_state.normalization_state,
             eval=eval,
             action_space=action_space,
         )
@@ -352,13 +352,10 @@ def make_init_fn(
 
         if hparams.normalize_env:
             normalizer = Normalizer()
-            # Convert JAX key to numpy seed and sample from observation space
-            key, sample_key = jax.random.split(key)
-            sample_obs = observation_space.sample(sample_key)
             norm_state = normalizer.init(
                 jax.tree.map(
                     lambda x: jnp.zeros_like(x, dtype=float),  # type: ignore
-                    sample_obs,
+                    observation_space.sample(key),
                 )
             )
         else:
