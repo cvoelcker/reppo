@@ -91,7 +91,7 @@ def make_scan_train_fn(
         )
         train_metrics = jax.tree.map(lambda x: x[-1], train_metrics)
         policy = policy_fn(train_state, not stochastic_eval)
-        eval_metrics = eval_fn(eval_key, policy, train_state.iteration)
+        eval_metrics = eval_fn(eval_key, policy)
         metrics = {
             **utils.prefix_dict("train", train_metrics),
             **utils.prefix_dict("eval", eval_metrics),
@@ -181,13 +181,7 @@ def make_loop_train_fn(
         train_steps_per_iteration = num_train_steps // num_iterations
         key, init_key = jax.random.split(key)
         state = init_fn(init_key)
-        
-        # Initialize observation (handle BC case specially)
-        key, env_key = jax.random.split(key)
-        obs, _ = utils.init_env_state(key=env_key, env=env, num_envs=num_envs, bc_indicator=bc_indicator)
-        if not bc_indicator:
-            obs = to_jax(obs)
-        
+        obs, _ = env.reset()
         state = state.replace(last_obs=obs, last_env_state=None)
         logging.info(f"Starting training for {num_iterations} iterations.")
         logging.info(f"Train steps per iteration: {train_steps_per_iteration}.")
@@ -219,7 +213,7 @@ def make_loop_train_fn(
                 step += 1
             policy = policy_fn(state, not stochastic_eval)
             key, eval_key = jax.random.split(key)
-            eval_metrics = eval_fn(eval_key, policy, state.iteration)
+            eval_metrics = eval_fn(eval_key, policy)
             state = state.replace(iteration=state.iteration + 1)
 
             # Save model parameters after eval run

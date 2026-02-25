@@ -240,7 +240,7 @@ def make_eval_fn(env: gymnasium.Env, max_episode_steps: int, demo_path: str = No
         # Compute action bounds once at function creation time
         dataset_low, dataset_high = _compute_action_bounds(demo_path)
 
-        def evaluate(key: Key, policy: Policy, step: int = 0) -> dict:
+        def evaluate(key: Key, policy: Policy) -> dict:
             obs_dict, _ = env.reset()
             obs = flatten_obs(obs_dict, env=env, demo_obs_keys=demo_obs_keys)
             
@@ -274,7 +274,7 @@ def make_eval_fn(env: gymnasium.Env, max_episode_steps: int, demo_path: str = No
             return eval_metrics
     else:
         # Non-BC evaluation function - matches upstream behavior
-        def evaluate(key: Key, policy: Policy, step: int = 0) -> dict:
+        def evaluate(key: Key, policy: Policy) -> dict:
             obs, _ = env.reset()
             metrics = defaultdict(list)
             num_episodes = 0
