@@ -4,6 +4,7 @@ from typing import Callable
 import operator
 import os
 
+import numpy as np
 import hydra
 import jax
 import optax
@@ -298,13 +299,13 @@ def make_policy_fn(
     offset = None
 
     def policy_fn(train_state: REPPOTrainState, eval: bool) -> Policy:
-        normalizer = Normalizer()
+        normalizer = Normalizer() if cfg.normalize_env else None
         actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
 
         policy = REPPOPolicy(
             base=actor_model,
-            normalizer=normalizer if cfg.normalize_env else None,
-            normalization_state=train_state.normalization_state,
+            normalizer=normalizer,
+            normalization_state=train_state.normalization_state if cfg.normalize_env else None,
             eval=eval,
             action_space=action_space,
         )
@@ -351,10 +352,13 @@ def make_init_fn(
 
         if hparams.normalize_env:
             normalizer = Normalizer()
+            # Convert JAX key to numpy seed and sample from observation space
+            key, sample_key = jax.random.split(key)
+            sample_obs = observation_space.sample(sample_key)
             norm_state = normalizer.init(
                 jax.tree.map(
                     lambda x: jnp.zeros_like(x, dtype=float),  # type: ignore
-                    observation_space.sample(key),
+                    sample_obs,
                 )
             )
         else:
@@ -370,13 +374,16 @@ def make_init_fn(
         # Print JAX actor structure
         logging.info("JAX Actor structure successfully created")
 
-        # Load BC pretrained weights into actor's feature_encoder
-        bc_checkpoint_path = getattr(hparams, "bc_checkpoint_path", None)
-        if bc_checkpoint_path and os.path.exists(bc_checkpoint_path):
-            logging.info(f"Loading BC actor weights from {bc_checkpoint_path}")
-            actor = load_bc_weights_to_actor(bc_checkpoint_path, actor)
+        # Load BC pretrained weights into actor's feature_encoder only if bc_indicator is True
+        if hparams.bc_indicator:
+            bc_checkpoint_path = getattr(hparams, "bc_checkpoint_path", None)
+            if bc_checkpoint_path and os.path.exists(bc_checkpoint_path):
+                logging.info(f"Loading BC actor weights from {bc_checkpoint_path}")
+                actor = load_bc_weights_to_actor(bc_checkpoint_path, actor)
+            else:
+                logging.info("No BC actor checkpoint specified or found, using random initialization")
         else:
-            logging.info("No BC actor checkpoint specified or found, using random initialization")
+            logging.info("bc_indicator=False, using random initialization for actor")
         # Also load weights into critic if specified
         # bc_critic_checkpoint_path = getattr(hparams, "bc_critic_checkpoint_path", None)
         # if bc_critic_checkpoint_path and os.path.exists(bc_critic_checkpoint_path):
@@ -413,7 +420,7 @@ def make_init_fn(
 def make_learner_fn(
     cfg: DictConfig, observation_space: Space, action_space: Space
 ) -> LearnerFn:
-    normalizer = Normalizer()
+    normalizer = Normalizer() if cfg.algorithm.normalize_env else None
     hparams = cfg.algorithm
     discrete_actions = isinstance(action_space, Discrete)
     d = action_space.shape[-1] if not discrete_actions else action_space.n
@@ -653,53 +660,71 @@ def make_learner_fn(
         return kl
 
     def update(train_state: REPPOTrainState, batch: Transition):
-        # Sample data at indices from the batch
-        def update_critic(_):
+        # Update critic always
+        if cfg.algorithm.bc_indicator:
+            def update_critic(_):
+                critic_grad_fn = jax.value_and_grad(critic_loss_fn, has_aux=True)
+                output, grads = critic_grad_fn(train_state.critic.params, train_state, batch)
+                critic_train_state = train_state.critic.apply_gradients(grads)
+                critic_metrics = output[1]
+                return critic_train_state, critic_metrics
+            
+            # Always update the critic
+            critic_train_state, critic_metrics = update_critic(None)
+            train_state = train_state.replace(critic=critic_train_state)
+
+            # Actor update with delayed start
+            def update_actor(_):
+                actor_grad_fn = jax.value_and_grad(actor_loss, has_aux=True)
+                output, grads = actor_grad_fn(train_state.actor.params, train_state, batch)
+                grad_norm = jax.tree.map(lambda x: jnp.linalg.norm(x), grads)
+                grad_norm = jax.tree.reduce(operator.add, grad_norm)
+                grads = jax.tree.map(
+                    lambda x: jnp.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0), grads
+                )
+                actor_train_state = train_state.actor.apply_gradients(grads)
+                actor_metrics = output[1]
+                return actor_train_state, grad_norm, actor_metrics
+            
+            def hold_update_actor(_):
+                actor_train_state = train_state.actor
+                grad_norm = jnp.array(0.0)
+                # Dynamically get the metric structure from actor_loss without computing gradients
+                _, actor_metrics = actor_loss(train_state.actor.params, train_state, batch)
+                return actor_train_state, grad_norm, actor_metrics
+            
+            # for bc policy only, start updating the actor after some iterations
+            actor_train_state, grad_norm, actor_metrics = jax.lax.cond(
+                train_state.iteration > cfg.algorithm.bc_actor_update_delay,
+                update_actor,
+                hold_update_actor,
+                None
+            )
+
+        else:
             critic_grad_fn = jax.value_and_grad(critic_loss_fn, has_aux=True)
             output, grads = critic_grad_fn(train_state.critic.params, train_state, batch)
             critic_train_state = train_state.critic.apply_gradients(grads)
+            train_state = train_state.replace(
+                critic=critic_train_state,
+            )
             critic_metrics = output[1]
-            return critic_train_state, critic_metrics
-        
-        def hold_update_critic(_):
-            critic_train_state = train_state.critic
-            # Return zeros matching the exact shape structure of critic_loss_fn output
-            batch_size = batch.obs.shape[0]
-            critic_metrics = {
-                'value_loss': jnp.array(0.0),
-                'critic_update_loss': jnp.zeros(batch_size),
-                'loss': jnp.array(0.0),
-                'aux_loss': jnp.zeros(batch_size),
-                'rew_aux_loss': jnp.zeros((batch_size, 1)),
-                'q': jnp.array(0.0),
-                'abs_batch_action': jnp.array(0.0),
-                'reward_mean': jnp.array(0.0),
-                'target_values': jnp.array(0.0),
-            }
-            return critic_train_state, critic_metrics
-        
-        # for bc policy only, start updating the critic after some iterations
-        critic_train_state, critic_metrics = jax.lax.cond(
-            train_state.iteration > 4,
-            update_critic,
-            hold_update_critic,
-            None
-        )
-    
-        train_state = train_state.replace(critic=critic_train_state)
 
-        actor_grad_fn = jax.value_and_grad(actor_loss, has_aux=True)
-        output, grads = actor_grad_fn(train_state.actor.params, train_state, batch)
-        grad_norm = jax.tree.map(lambda x: jnp.linalg.norm(x), grads)
-        grad_norm = jax.tree.reduce(operator.add, grad_norm)
-        grads = jax.tree.map(
-            lambda x: jnp.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0), grads
-        )
-        actor_train_state = train_state.actor.apply_gradients(grads)
+            actor_grad_fn = jax.value_and_grad(actor_loss, has_aux=True)
+            output, grads = actor_grad_fn(train_state.actor.params, train_state, batch)
+            grad_norm = jax.tree.map(lambda x: jnp.linalg.norm(x), grads)
+            grad_norm = jax.tree.reduce(operator.add, grad_norm)
+            grads = jax.tree.map(
+                lambda x: jnp.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0), grads
+            )
+            actor_train_state = train_state.actor.apply_gradients(grads)
+            actor_metrics = output[1]
+        
+        # Update train_state with actor in all paths
         train_state = train_state.replace(
             actor=actor_train_state,
         )
-        actor_metrics = output[1]
+        
         return train_state, {
             **critic_metrics,
             **actor_metrics,

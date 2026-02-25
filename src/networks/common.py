@@ -2,7 +2,6 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 
-
 class UnitBallNorm(nnx.Module):
     def __call__(self, x: jax.Array) -> jax.Array:
         return x / (jnp.linalg.norm(x, axis=-1, keepdims=True) + 1e-8)
@@ -78,7 +77,7 @@ class MLP(nnx.Module):
                 activation=hidden_activation,
             )
             for _ in range(layers - 2)
-        ]) # nnx.List is the correct way to store a list of submodules or arrays in Flax nnx (>=0.12.0), as regular Python lists are not allowed for static attributes containing JAX arrays or submodules.
+        ])
         self.norm = nnx.LayerNorm(in_features, rngs=rngs)
         self.output_layer = normed_activation_layer(
             rngs,
@@ -98,8 +97,7 @@ class MLP(nnx.Module):
         if self.input_activation:
             x = self.hidden_activation(x)
         if self.layers == 1:
-            return self.input_layer(x)
-            # return _potentially_skip(self.input_skip, x, self.input_layer)
+            return _potentially_skip(self.input_skip, x, self.input_layer)
         x = _potentially_skip(self.input_skip, x, self.input_layer)
         for layer in self.main_layers:
             x = _potentially_skip(self.hidden_skip, x, layer)

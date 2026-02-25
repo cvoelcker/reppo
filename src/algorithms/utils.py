@@ -6,6 +6,8 @@ import jax
 import jax.numpy as jnp
 from mujoco_playground import State
 import wandb
+import numpy as np
+import torch
 
 from gymnax.environments.environment import Environment
 from flax import struct
@@ -197,19 +199,45 @@ def make_log_callback():
 
 
 def init_env_state(
-    key: jax.Array, env: Environment, num_envs: int
+    key: jax.Array, env: Environment, num_envs: int, bc_indicator: bool = False
 ) -> tuple[jax.Array, gymnax.EnvState]:
     key, env_key = jax.random.split(key)
-    env_key = jax.random.split(env_key, num_envs)
-    obs, env_state = env.reset(env_key)
-    if isinstance(env_state.unwrapped(), State):
-        _env_state = env_state.unwrapped()
-        key, randomize_steps_key = jax.random.split(key)
-        _env_state.info["steps"] = jax.random.randint(
-            randomize_steps_key,
-            _env_state.info["steps"].shape,
-            0,
-            env.episode_length,
-        ).astype(jnp.float32)
-        env_state.set_env_state(_env_state)
+    # Unsure about this part - this particular envionment configuration doesn't really behave the same way as the other one and it does not have the 'step' attribute 
+    if bc_indicator:
+        obs_info, info_dict = env.reset()
+        base_env = env.unwrapped if hasattr(env, 'unwrapped') else env
+        if hasattr(base_env, '_elapsed_steps'):
+            # Randomize elapsed_steps to a value in [0, max_episode_steps)
+            max_steps = base_env.max_episode_steps
+            key, randomize_steps_key = jax.random.split(key)
+            random_steps = jax.random.randint(
+                randomize_steps_key,
+                shape=(num_envs,),
+                minval=0,
+                maxval=max_steps,
+            )
+            # Convert to numpy and set on torch tensor 
+            random_steps_np = np.array(random_steps)
+            base_env._elapsed_steps = torch.from_numpy(random_steps_np).to(
+                dtype=torch.int32, device=base_env.device
+            )
+            logging.info(f"Randomized elapsed_steps: {base_env._elapsed_steps}")
+        
+        # Return observations and None for env_state (ManiSkill doesn't have env_state)
+        obs = obs_info
+        env_state = None
+    else:
+        obs, env_state = env.reset(env_key)
+        # For non-BC mode (JAX environments), randomize steps if available
+        if isinstance(env_state.unwrapped(), State):
+            _env_state = env_state.unwrapped()
+            key, randomize_steps_key = jax.random.split(key)
+            _env_state.info["steps"] = jax.random.randint(
+                randomize_steps_key,
+                _env_state.info["steps"].shape,
+                0,
+                env.episode_length,
+            ).astype(jnp.float32)
+            env_state.set_env_state(_env_state)
+    
     return obs, env_state

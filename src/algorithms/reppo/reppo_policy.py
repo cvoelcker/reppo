@@ -27,7 +27,7 @@ class REPPOPolicy(nnx.Module):
     ):
         self.base = base
         self.normalizer = normalizer
-        self.normalization_state = nnx.data(normalization_state)
+        self.normalization_state = nnx.data(normalization_state) if normalization_state is not None else None
         self._eval_mode = eval
         self.action_space = action_space
 
@@ -81,7 +81,7 @@ class LangevinPolicy(nnx.Module):
         self.actor = actor
         self.critic = critic
         self.normalizer = normalizer
-        self.normalization_state = nnx.data(normalization_state)
+        self.normalization_state = nnx.data(normalization_state) if normalization_state is not None else None
         self.action_space = action_space
         self.config = config
         self._eval_mode = eval
@@ -238,23 +238,23 @@ def make_policy_fn(
     offset = None
 
     def policy_fn(train_state: REPPOTrainState, eval: bool) -> Policy:
-        normalizer = Normalizer()
+        normalizer = Normalizer() if cfg.normalize_env else None
         actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
         critic_model = nnx.merge(train_state.critic.graphdef, train_state.critic.params)
         if cfg.policy_method == "langevin":
             policy = LangevinPolicy(
                 actor=actor_model,
                 critic=critic_model,
-                normalizer=normalizer if cfg.normalize_env else None,
-                normalization_state=train_state.normalization_state,
+                normalizer=normalizer,
+                normalization_state=train_state.normalization_state if cfg.normalize_env else None,
                 action_space=action_space,
                 eval=eval,
             )
         else:
             policy = REPPOPolicy(
                 base=actor_model,
-                normalizer=normalizer if cfg.normalize_env else None,
-                normalization_state=train_state.normalization_state,
+                normalizer=normalizer,
+                normalization_state=train_state.normalization_state if cfg.normalize_env else None,
                 eval=eval,
                 action_space=action_space,
             )

@@ -22,7 +22,7 @@ from flax.serialization import to_state_dict
 # from src.maniskill_utils.maniskill_env import OfflineDatasetEnv
 
 from src.env_utils.torch_wrappers.maniskill_wrapper import to_jax
-
+from src.runners.maniskill_runner import flatten_obs, get_demo_obs_keys
 
 def make_scan_train_fn(
     # env : OfflineDatasetEnv(),
@@ -40,6 +40,8 @@ def make_scan_train_fn(
     eval_fn: EvalFn | None = None,
     rollout_fn: RolloutFn | None = None,
     log_callback: LogCallback | None = None,
+    demo_path: str | None = None,
+    bc_indicator: bool = False,
 ) -> TrainFn:
     from src.runners.maniskill_runner import (
         make_eval_fn as make_eval_fn,
@@ -55,10 +57,10 @@ def make_scan_train_fn(
     eval_interval = int((total_time_steps / (num_steps * num_envs)) // num_eval)
 
     if eval_fn is None:
-        eval_fn = make_eval_fn(eval_env, max_episode_steps, step)
+        eval_fn = make_eval_fn(eval_env, max_episode_steps, demo_path=demo_path, bc_indicator=bc_indicator)
 
     if rollout_fn is None:
-        rollout_fn = make_rollout_fn(env, num_steps=num_steps, num_envs=num_envs)
+        rollout_fn = make_rollout_fn(env, num_steps=num_steps, num_envs=num_envs, demo_path=demo_path, bc_indicator=bc_indicator)
 
     if log_callback is None:
         log_callback = lambda state, metrics: None
@@ -111,7 +113,7 @@ def make_scan_train_fn(
     def init_train_state(key: Key) -> TrainState:
         key, env_key = jax.random.split(key)
         train_state = init_fn(key)
-        obs, env_state = utils.init_env_state(key=env_key, env=env, num_envs=num_envs)
+        obs, env_state = utils.init_env_state(key=env_key, env=env, num_envs=num_envs, bc_indicator=bc_indicator)
         train_state = train_state.replace(last_obs=obs, last_env_state=env_state)
         return train_state
 
@@ -147,6 +149,8 @@ def make_loop_train_fn(
     rollout_fn: RolloutFn | None = None,
     eval_fn: EvalFn | None = None,
     log_callback: LogCallback | None = None,
+    demo_path: str | None = None,
+    bc_indicator: bool = False,
 ):
     from src.runners.maniskill_runner import (
         make_eval_fn as make_eval_fn,
@@ -165,10 +169,10 @@ def make_loop_train_fn(
         eval_env = env
 
     if rollout_fn is None:
-        rollout_fn = make_gymnasium_rollout_fn(env, num_steps, num_envs)
+        rollout_fn = make_rollout_fn(env, num_steps=num_steps, num_envs=num_envs, demo_path=demo_path, bc_indicator=bc_indicator)
 
     if eval_fn is None:
-        eval_fn = make_gymnasium_eval_fn(eval_env, max_episode_steps)
+        eval_fn = make_eval_fn(eval_env, max_episode_steps, demo_path=demo_path, bc_indicator=bc_indicator)
 
     def loop_train_fn(key: Key) -> tuple[TrainState, dict]:
         # Initialize the policy, environment and map that across the number of random seeds
@@ -177,8 +181,14 @@ def make_loop_train_fn(
         train_steps_per_iteration = num_train_steps // num_iterations
         key, init_key = jax.random.split(key)
         state = init_fn(init_key)
-        obs, _ = env.reset()
-        state = state.replace(last_obs=to_jax(obs), last_env_state=None)
+        
+        # Initialize observation (handle BC case specially)
+        key, env_key = jax.random.split(key)
+        obs, _ = utils.init_env_state(key=env_key, env=env, num_envs=num_envs, bc_indicator=bc_indicator)
+        if not bc_indicator:
+            obs = to_jax(obs)
+        
+        state = state.replace(last_obs=obs, last_env_state=None)
         logging.info(f"Starting training for {num_iterations} iterations.")
         logging.info(f"Train steps per iteration: {train_steps_per_iteration}.")
         logging.info(f"Total time steps: {total_time_steps}.")

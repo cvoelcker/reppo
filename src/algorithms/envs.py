@@ -15,6 +15,8 @@ from gymnax.environments.spaces import (
 import gymnasium as gym
 from jax import numpy as jnp
 import os
+import numpy as np
+import logging
 
 from src.env_utils.jax_wrappers import (
     BatchEnv,
@@ -135,13 +137,13 @@ def _make_gymnasium_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
     )
 
 
-def _make_maniskill_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
+def _make_maniskill_env(cfg: DictConfig, n_obs_dataset: int = None) -> EnvSetup[gymnasium.Env]:
     from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
     from mani_skill.utils.wrappers.record import RecordEpisode
     from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
     def make_env(eval: bool = False):
-        env_kwargs = cfg.env.kwargs if "kwargs" in cfg.env else {}
+        env_kwargs = cfg.env.env_kwargs if "env_kwargs" in cfg.env else {}
         if cfg.env.control_mode is not None:
             env_kwargs["control_mode"] = cfg.env.control_mode
         reconfiguration_freq = (
@@ -204,16 +206,34 @@ def _make_maniskill_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
     env = make_env(eval=False)
     eval_env = make_env(eval=True)
     
-    # Debug: check observation space from wrapper
-    import logging
-    logging.info(f"[make_maniskill_env] env.single_observation_space: {env.single_observation_space}")
-    logging.info(f"[make_maniskill_env] env.single_observation_space.shape: {env.single_observation_space.shape}")
+    if cfg.algorithm.bc_indicator:
+        # Debug: check observation space from wrapper
+        logging.info(f"[make_maniskill_env] env.single_observation_space: {env.single_observation_space}")
+        logging.info(f"[make_maniskill_env] env.single_observation_space.shape: {env.single_observation_space.shape}")
+        logging.info(f"[make_maniskill_env] env.observation_space: {env.observation_space}")
+        logging.info(f"[make_maniskill_env] env.observation_space.shape: {env.observation_space.shape}")
+        
+        # Override observation space to match dataset dimension
+        obs_space = env.single_observation_space
+        if n_obs_dataset is not None:
+            logging.info(f"[make_maniskill_env] Overriding observation space from {obs_space.shape} to ({cfg.runner.train_fn.num_envs}, {n_obs_dataset})")
+            # Create new observation space with dataset dims
+            new_shape = (n_obs_dataset,)
+            obs_space = gymnasium.spaces.Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=new_shape,
+                dtype=np.float32
+            )
+        obs_space = _gymnasium_to_gymnax_space(obs_space)
+    else:
+        obs_space = _gymnasium_to_gymnax_space(env.single_observation_space)
     
     return EnvSetup(
         env=env,
         eval_env=eval_env,
         action_space=_gymnasium_to_gymnax_space(env.single_action_space),
-        observation_space=_gymnasium_to_gymnax_space(env.single_observation_space),
+        observation_space=obs_space,
     )
 
 
@@ -242,7 +262,7 @@ def _make_atari_env(cfg: DictConfig) -> EnvSetup[gymnasium.Env]:
     )
 
 
-def make_env(cfg: DictConfig) -> EnvSetup[Env]:
+def make_env(cfg: DictConfig, n_obs_dataset: int = None) -> EnvSetup[Env]:
     if cfg.env.type == "brax":
         return _make_brax_env(cfg)
     elif cfg.env.type == "mjx":
@@ -256,6 +276,6 @@ def make_env(cfg: DictConfig) -> EnvSetup[Env]:
     elif cfg.env.type == "atari":
         return _make_atari_env(cfg)
     elif cfg.env.type == "maniskill":
-        return _make_maniskill_env(cfg)
+        return _make_maniskill_env(cfg, n_obs_dataset=n_obs_dataset)
     else:
         raise ValueError(f"Unknown environment type: {cfg.env.type}")
