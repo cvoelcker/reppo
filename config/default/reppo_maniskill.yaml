@@ -1,7 +1,7 @@
 defaults:
   - algorithm: reppo
   - env: maniskill
-  - logging: wandb_offline
+  - logging: wandb_online
   - runner: maniskill
   - _self_
 

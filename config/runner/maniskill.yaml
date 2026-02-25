@@ -3,11 +3,15 @@ rollout_fn:
   _partial_: true
   num_steps: ${algorithm.num_steps}
   num_envs: ${algorithm.num_envs}
+  demo_path: ${env.demo.demo_path}
+  bc_indicator: ${algorithm.bc_indicator}
 
 eval_fn:
   _target_: src.runners.maniskill_runner.make_eval_fn
   _partial_: true
   max_episode_steps: ${algorithm.max_episode_steps}
+  demo_path: ${env.demo.demo_path}
+  bc_indicator: ${algorithm.bc_indicator}
   
 train_fn:
   _target_: src.algorithms.training.make_loop_train_fn

@@ -2,6 +2,9 @@ import logging
 import gymnasium
 from gymnax.environments.environment import Environment
 import jax
+import torch
+import numpy as np
+import os
 from src.common import (
     EvalFn,
     InitFn,
@@ -15,12 +18,15 @@ from src.common import (
 )
 from src.algorithms import utils
 import jax.numpy as jnp
+from flax.serialization import to_state_dict
+# from src.maniskill_utils.maniskill_env import OfflineDatasetEnv
 
 from src.env_utils.torch_wrappers.maniskill_wrapper import to_jax
-
+from src.runners.maniskill_runner import flatten_obs, get_demo_obs_keys
 
 def make_scan_train_fn(
-    env: Environment | tuple[Environment, Environment],
+    # env : OfflineDatasetEnv(),
+    env: gymnasium.Env | tuple[gymnasium.Env, gymnasium.Env],
     total_time_steps: int,
     num_steps: int,
     num_envs: int,
@@ -34,10 +40,12 @@ def make_scan_train_fn(
     eval_fn: EvalFn | None = None,
     rollout_fn: RolloutFn | None = None,
     log_callback: LogCallback | None = None,
+    demo_path: str | None = None,
+    bc_indicator: bool = False,
 ) -> TrainFn:
-    from src.runners.gymnax_runner import (
-        make_eval_fn as make_gymnax_eval_fn,
-        make_rollout_fn as make_gymnax_rollout_fn,
+    from src.runners.maniskill_runner import (
+        make_eval_fn as make_eval_fn,
+        make_rollout_fn as make_rollout_fn,
     )
 
     # Initialize the environment and wrap it to admit vectorized behavior.
@@ -49,10 +57,10 @@ def make_scan_train_fn(
     eval_interval = int((total_time_steps / (num_steps * num_envs)) // num_eval)
 
     if eval_fn is None:
-        eval_fn = make_gymnax_eval_fn(eval_env, max_episode_steps)
+        eval_fn = make_eval_fn(eval_env, max_episode_steps, demo_path=demo_path, bc_indicator=bc_indicator)
 
     if rollout_fn is None:
-        rollout_fn = make_gymnax_rollout_fn(env, num_steps=num_steps, num_envs=num_envs)
+        rollout_fn = make_rollout_fn(env, num_steps=num_steps, num_envs=num_envs, demo_path=demo_path, bc_indicator=bc_indicator)
 
     if log_callback is None:
         log_callback = lambda state, metrics: None
@@ -105,7 +113,7 @@ def make_scan_train_fn(
     def init_train_state(key: Key) -> TrainState:
         key, env_key = jax.random.split(key)
         train_state = init_fn(key)
-        obs, env_state = utils.init_env_state(key=env_key, env=env, num_envs=num_envs)
+        obs, env_state = utils.init_env_state(key=env_key, env=env, num_envs=num_envs, bc_indicator=bc_indicator)
         train_state = train_state.replace(last_obs=obs, last_env_state=env_state)
         return train_state
 
@@ -127,6 +135,7 @@ def make_scan_train_fn(
 
 
 def make_loop_train_fn(
+    # env : OfflineDatasetEnv(),
     env: gymnasium.Env | tuple[gymnasium.Env, gymnasium.Env],
     total_time_steps: int,
     num_steps: int,
@@ -140,10 +149,12 @@ def make_loop_train_fn(
     rollout_fn: RolloutFn | None = None,
     eval_fn: EvalFn | None = None,
     log_callback: LogCallback | None = None,
+    demo_path: str | None = None,
+    bc_indicator: bool = False,
 ):
-    from src.runners.gymnasium_runner import (
-        make_eval_fn as make_gymnasium_eval_fn,
-        make_rollout_fn as make_gymnasium_rollout_fn,
+    from src.runners.maniskill_runner import (
+        make_eval_fn as make_eval_fn,
+        make_rollout_fn as make_rollout_fn,
     )
 
     train_log_interval = int((total_time_steps / (num_steps * num_envs)) // num_eval)
@@ -158,10 +169,10 @@ def make_loop_train_fn(
         eval_env = env
 
     if rollout_fn is None:
-        rollout_fn = make_gymnasium_rollout_fn(env, num_steps, num_envs)
+        rollout_fn = make_rollout_fn(env, num_steps=num_steps, num_envs=num_envs, demo_path=demo_path, bc_indicator=bc_indicator)
 
     if eval_fn is None:
-        eval_fn = make_gymnasium_eval_fn(eval_env, max_episode_steps)
+        eval_fn = make_eval_fn(eval_env, max_episode_steps, demo_path=demo_path, bc_indicator=bc_indicator)
 
     def loop_train_fn(key: Key) -> tuple[TrainState, dict]:
         # Initialize the policy, environment and map that across the number of random seeds
@@ -171,10 +182,17 @@ def make_loop_train_fn(
         key, init_key = jax.random.split(key)
         state = init_fn(init_key)
         obs, _ = env.reset()
-        state = state.replace(last_obs=to_jax(obs), last_env_state=None)
+        state = state.replace(last_obs=obs, last_env_state=None)
         logging.info(f"Starting training for {num_iterations} iterations.")
         logging.info(f"Train steps per iteration: {train_steps_per_iteration}.")
         logging.info(f"Total time steps: {total_time_steps}.")
+
+        # Create checkpoint directories under src/ for saving model parameters
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        actor_checkpoint_dir = os.path.join(base_dir, 'checkpoints', 'actor')
+        critic_checkpoint_dir = os.path.join(base_dir, 'checkpoints', 'critic')
+        os.makedirs(actor_checkpoint_dir, exist_ok=True)
+        os.makedirs(critic_checkpoint_dir, exist_ok=True)
 
         step = 0
         for i in range(num_iterations):
@@ -197,6 +215,33 @@ def make_loop_train_fn(
             key, eval_key = jax.random.split(key)
             eval_metrics = eval_fn(eval_key, policy)
             state = state.replace(iteration=state.iteration + 1)
+
+            # Save model parameters after eval run
+            # Helper function to recursively convert JAX state dict to torch tensors
+            def jax_dict_to_torch(jax_dict, prefix=''):
+                torch_dict = {}
+                for k, v in jax_dict.items():
+                    full_key = f"{prefix}.{k}" if prefix else k
+                    if isinstance(v, dict):
+                        torch_dict.update(jax_dict_to_torch(v, full_key))
+                    elif isinstance(v, (jnp.ndarray, np.ndarray)):
+                        try:
+                            torch_dict[full_key] = torch.from_numpy(np.array(jax.device_get(v)))
+                        except (TypeError, ValueError):
+                            # Skip non-numeric types
+                            pass
+                return torch_dict
+            
+            # Actor
+            jax_actor_dict = to_state_dict(state.actor.params)
+            torch_actor_dict = jax_dict_to_torch(jax_actor_dict)
+            torch.save(torch_actor_dict, os.path.join(actor_checkpoint_dir, f'{env.spec.id}_actor_step_{int(state.iteration)}_bc.pth'))
+            
+            # Critic
+            jax_critic_dict = to_state_dict(state.critic.params)
+            torch_critic_dict = jax_dict_to_torch(jax_critic_dict)
+            torch.save(torch_critic_dict, os.path.join(critic_checkpoint_dir, f'{env.spec.id}_critic_step_{int(state.iteration)}_bc.pth'))
+            
             log_callback(state, utils.prefix_dict("eval", eval_metrics))
         return state, {
             **utils.prefix_dict("train", train_metrics),

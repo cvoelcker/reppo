@@ -332,6 +332,8 @@ class Actor(nn.Module):
             torch.tanh(mean),
             torch.exp(self.log_temp),
             torch.exp(self.log_lagrange),
+            log_std,
+            mean
         )
 
 

@@ -27,7 +27,7 @@ class REPPOPolicy(nnx.Module):
     ):
         self.base = base
         self.normalizer = normalizer
-        self.normalization_state = normalization_state
+        self.normalization_state = nnx.data(normalization_state) if normalization_state is not None else None
         self._eval_mode = eval
         self.action_space = action_space
 
@@ -81,7 +81,7 @@ class LangevinPolicy(nnx.Module):
         self.actor = actor
         self.critic = critic
         self.normalizer = normalizer
-        self.normalization_state = normalization_state
+        self.normalization_state = nnx.data(normalization_state) if normalization_state is not None else None
         self.action_space = action_space
         self.config = config
         self._eval_mode = eval

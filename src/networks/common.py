@@ -2,7 +2,6 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 
-
 class UnitBallNorm(nnx.Module):
     def __call__(self, x: jax.Array) -> jax.Array:
         return x / (jnp.linalg.norm(x, axis=-1, keepdims=True) + 1e-8)
@@ -69,7 +68,7 @@ class MLP(nnx.Module):
             use_norm=use_norm,
             activation=hidden_activation,
         )
-        self.main_layers = [
+        self.main_layers = nnx.List([
             normed_activation_layer(
                 rngs,
                 hidden_dim,
@@ -78,7 +77,7 @@ class MLP(nnx.Module):
                 activation=hidden_activation,
             )
             for _ in range(layers - 2)
-        ]
+        ])
         self.norm = nnx.LayerNorm(in_features, rngs=rngs)
         self.output_layer = normed_activation_layer(
             rngs,
