@@ -236,7 +236,7 @@ def make_policy_fn(
 ) -> Callable[[REPPOTrainState, bool], Policy]:
     cfg = cfg.algorithm
     offset = None
-
+    
     def policy_fn(train_state: REPPOTrainState, eval: bool) -> Policy:
         normalizer = Normalizer() if cfg.normalize_env else None
         actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)

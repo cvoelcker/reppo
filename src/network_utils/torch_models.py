@@ -4,7 +4,7 @@ from torch.distributions import constraints
 from torch.distributions.transforms import Transform
 from torch.distributions.normal import Normal
 
-from src.torchrl.reppo_util import hl_gauss
+from src.torchrl.reppo import hl_gauss
 
 
 class TanhTransform(Transform):
@@ -56,9 +56,9 @@ class TanhTransform(Transform):
 
 
 def get_activation(name):
-    # if name == "swish":
-    #     return nn.swish()
-    if name == "relu":
+    if name == "swish":
+        return nn.swish()
+    elif name == "relu":
         return nn.ReLU()
     elif name == "swish":
         return nn.SiLU()
@@ -318,7 +318,7 @@ class Actor(nn.Module):
         )
         self.min_std = min_std
 
-    def forward(self, obs: torch.Tensor):
+    def forward(self, obs: torch.Tensor) -> torch.distributions.Distribution:
         x = self.model(obs)
         mean, log_std = torch.split(x, x.shape[-1] // 2, dim=-1)
         std = torch.exp(log_std) + self.min_std
@@ -335,6 +335,7 @@ class Actor(nn.Module):
             log_std,
             mean
         )
+
 
 class StochasticPolicy(nn.Module):
     def __init__(self, actor: Actor, normalizer: nn.Module = None, *args, **kwargs):

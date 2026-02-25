@@ -1,8 +1,9 @@
-from gymnasium import Wrapper, spaces
+from gymnasium import Wrapper
 import jax
 import jax.numpy as jnp
 import numpy as np
 import torch
+
 
 def to_jax(x):
     if isinstance(x, np.ndarray):
@@ -10,9 +11,7 @@ def to_jax(x):
     elif isinstance(x, jax.Array):
         return x
     elif isinstance(x, torch.Tensor):
-        return jnp.array(x.cpu().numpy()) # not zero-copy though
-        # return jax.dlpack.from_dlpack(torch.utils.dlpack.to_dlpack(x.contiguous()))
-        # The error occurs because jax.dlpack.from_dlpack expects an object that implements the dlpack and dlpack_device methods (i.e., a DLPack-compatible tensor), but torch.utils.dlpack.to_dlpack(x.contiguous()) returns a DLPack capsule, not an object with those methods.
+        return jax.dlpack.from_dlpack(torch.utils.dlpack.to_dlpack(x.contiguous()))
     elif isinstance(x, dict) or isinstance(x, list):
         return jax.tree.map(to_jax, x)
     else:
@@ -25,8 +24,7 @@ def to_torch(x):
     elif isinstance(x, torch.Tensor):
         return x
     elif isinstance(x, jax.Array):
-        return torch.from_numpy(np.array(x))
-        # return torch.utils.dlpack.from_dlpack(jax.dlpack.to_dlpack(x)) # no function called to_dlpack in jax.dlpack
+        return torch.utils.dlpack.from_dlpack(jax.dlpack.to_dlpack(x))
     else:
         raise ValueError(f"Cannot convert type {type(x)} to torch.Tensor")
 
@@ -48,13 +46,6 @@ class ManiSkillWrapper(Wrapper):
         self.returns = jnp.zeros(env.num_envs, dtype=np.float32)
         self.episode_len = jnp.zeros(env.num_envs, dtype=np.float32)
         self.success = jnp.zeros(env.num_envs, dtype=np.float32)
-        
-        # Cache the overridden observation spaces to force them to be used
-        # from gymnasium import spaces
-        # try:
-        #     num_envs = env.num_envs
-        # except AttributeError:
-        #     num_envs = 1
 
     @property
     def action_space(self):
