@@ -75,8 +75,6 @@ class Actor(nnx.Module):
                 "State must be provided for actor."
             )
             obs = obs["state"]
-        
-        # Observations should already be filtered to 25 dims by the environment wrapper
         features = self.feature_encoder(obs)
         return self.policy_head(features, scale=scale, deterministic=False)
 
@@ -86,8 +84,6 @@ class Actor(nnx.Module):
                 "State must be provided for actor."
             )
             obs = obs["state"]
-        
-        # Observations should already be filtered to 25 dims by the environment wrapper
         features = self.feature_encoder(obs)
         return self.policy_head(features, deterministic=True)
 
@@ -108,14 +104,14 @@ def make_continuous_actor(
 ) -> Actor:
     hparams = cfg.algorithm
     if cfg.env.get("asymmetric_observation", False):
-        actor_observation_space = observation_space.spaces["state"]  # 25 # 25 for bc and - observation_space.spaces["state"] for non-bc
+        actor_observation_space = observation_space.spaces["state"]
     else:
-        actor_observation_space = observation_space  # 25 for bc and - observation_space for non-bc observation_space
+        actor_observation_space = observation_space
     if encoder is not None:
         actor_encoder = encoder
     else:
         actor_encoder = MLP(
-            in_features=actor_observation_space.shape[0], # actor_observation_space.shape[0], for non-bc
+            in_features=actor_observation_space.shape[0],
             out_features=action_space.shape[0] * 2,
             hidden_dim=hparams.actor_hidden_dim,
             hidden_activation=nnx.swish,
@@ -130,10 +126,7 @@ def make_continuous_actor(
     actor = Actor(
         feature_encoder=actor_encoder,
         policy_head=TanhGaussianPolicyHead(
-            min_std=hparams.actor_min_std, 
-            fixed_std=hparams.fixed_actor_std
-            # action_low=jnp.array(action_space.low), # optional
-            # action_high=jnp.array(action_space.high), # optional
+            min_std=hparams.actor_min_std, fixed_std=hparams.fixed_actor_std
         ),
         kl_start=hparams.kl_start,
         ent_start=hparams.ent_start,

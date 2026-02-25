@@ -236,25 +236,25 @@ def make_policy_fn(
 ) -> Callable[[REPPOTrainState, bool], Policy]:
     cfg = cfg.algorithm
     offset = None
-    
+
     def policy_fn(train_state: REPPOTrainState, eval: bool) -> Policy:
-        normalizer = Normalizer() if cfg.normalize_env else None
+        normalizer = Normalizer()
         actor_model = nnx.merge(train_state.actor.graphdef, train_state.actor.params)
         critic_model = nnx.merge(train_state.critic.graphdef, train_state.critic.params)
         if cfg.policy_method == "langevin":
             policy = LangevinPolicy(
                 actor=actor_model,
                 critic=critic_model,
-                normalizer=normalizer,
-                normalization_state=train_state.normalization_state if cfg.normalize_env else None,
+                normalizer=normalizer if cfg.normalize_env else None,
+                normalization_state=train_state.normalization_state,
                 action_space=action_space,
                 eval=eval,
             )
         else:
             policy = REPPOPolicy(
                 base=actor_model,
-                normalizer=normalizer,
-                normalization_state=train_state.normalization_state if cfg.normalize_env else None,
+                normalizer=normalizer if cfg.normalize_env else None,
+                normalization_state=train_state.normalization_state,
                 eval=eval,
                 action_space=action_space,
             )
