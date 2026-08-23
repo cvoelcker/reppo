@@ -71,10 +71,11 @@ This project is licensed under the MIT License -- see the [LICENSE](LICENSE) fil
 ## Citation
 
 ```bibtex
-@article{voelcker2025reppo,
-  title     = {Relative Entropy Pathwise Policy Optimization},
-  author    = {Voelcker, Claas and Brunnbauer, Axel and Hussing, Marcel and Nauman, Michal and Abbeel, Pieter and Eaton, Eric and Grosu, Radu and Farahmand, Amir-massoud and Gilitschenski, Igor},
-  booktitle = {preprint},
-  year      = {2025},
-}
-```
+@inproceedings{
+voelcker2026relative,
+title={Relative Entropy Pathwise Policy Optimization},
+author={Claas A Voelcker and Axel Brunnbauer and Marcel Hussing and Michal Nauman and Pieter Abbeel and Radu Grosu and Eric Eaton and Amir-massoud Farahmand and Igor Gilitschenski},
+booktitle={The Fourteenth International Conference on Learning Representations},
+year={2026},
+url={https://openreview.net/forum?id=4vmm8mlHkS}
+}```
